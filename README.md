@@ -1,39 +1,58 @@
 # Merge And Open Target
 
-An Obsidian plugin for moving note content into another note and opening the target immediately after the merge.
+An Obsidian plugin for moving note content into another note and opening the target note immediately after the merge.
+
+一个 Obsidian 插件，用来把整篇笔记或当前选中的内容合并到另一篇笔记，并在完成后自动打开目标笔记。
+
+## Why This Plugin
+
+Obsidian's built-in Note composer is great for merging notes, but some workflows still feel missing:
+
+- After merging note A into note B, open note B automatically
+- Merge only the current selection into another note
+- Skip source frontmatter when merging a whole note
+
+This plugin exists to make that workflow feel faster and more direct.
 
 ## Features
 
 - Merge the current note into another note and open the target note
 - Merge selected text into another note and open the target note
-- Strip frontmatter from the source note when merging a whole file
-- Append to the end of the target note or prepend to the beginning
+- Strip source frontmatter when merging a whole note
+- Append to the target note or prepend to the beginning
 - Optionally move the source note to trash after a whole-note merge
+- Ask for confirmation before merging
 
 ## Commands
 
 - `Merge current file into another note and open target`
 - `Merge selected text into another note and open target`
 
-## Behavior
+## Current Behavior
 
-- Whole-note merge:
-  - merges the source note body into the target note
-  - does not merge source frontmatter into the target
-  - can optionally trash the source note after merge
-- Selected-text merge:
-  - merges only the selected text into the target note
-  - removes the selected text from the source note
-  - opens the target note after merge
+### Whole-note merge
 
-## Development
+- Merges the source note body into the target note
+- Does not merge the source note's frontmatter into the target
+- Can optionally move the source note to trash after merge
+- Opens the target note after merge
 
-```bash
-npm install
-npm run build
-```
+### Selected-text merge
 
-## Install Locally
+- Merges only the selected text into the target note
+- Removes the selected text from the source note
+- Opens the target note after merge
+
+## Settings
+
+- Merge position: append to end or prepend to beginning
+- Separator: custom text inserted between merged contents
+- Trash source after whole-note merge
+- Confirm before merge
+
+## Install
+
+### Manual install
 
 Copy these files into your vault at `.obsidian/plugins/merge-open-target/`:
 
@@ -42,3 +61,33 @@ Copy these files into your vault at `.obsidian/plugins/merge-open-target/`:
 - `versions.json`
 
 Then reload community plugins in Obsidian.
+
+## Development
+
+```bash
+npm install
+npm run build
+```
+
+## Notes
+
+- This plugin currently works as an alternative command workflow rather than patching Obsidian's core Note composer command directly.
+- When merging selected text, the current behavior is move, not copy.
+
+## 中文说明
+
+这个插件适合下面两类场景：
+
+- 你把 A 合并到 B 以后，希望自动打开 B
+- 你只想把当前选中的一段内容并到别的笔记，而不是整篇移动
+
+当前版本特点：
+
+- 整篇合并时，不会把源笔记的 frontmatter 合并过去
+- 选区合并时，会把选中内容移动到目标笔记，并从原笔记删除
+- 支持合并到目标笔记开头或末尾
+- 支持合并前确认
+
+## License
+
+MIT
