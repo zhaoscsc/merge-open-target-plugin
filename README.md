@@ -43,7 +43,13 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
-## What's New in v0.1.2
+## What's New in v0.1.3
+
+- Search target notes by `aliases` in addition to the note title
+- Example: searching `XAI` can now find a note titled `grok` if `XAI` is listed in frontmatter aliases
+- Keep recent-note prioritization and the `最近` badge in the suggestion list
+
+## Previous Update in v0.1.2
 
 - Show a subtle `最近` badge for recently opened note suggestions
 - Makes duplicate note titles easier to distinguish at a glance
@@ -98,6 +104,8 @@ npm run build
 - 选区合并时，会把选中内容移动到目标笔记，并从原笔记删除
 - 支持合并到目标笔记开头或末尾
 - 支持合并前确认
+- 搜索目标笔记时，支持按笔记名和 `aliases` 查找
+- 同名笔记会优先显示最近打开过的那篇，并带 `最近` 标签
 
 ## License
 

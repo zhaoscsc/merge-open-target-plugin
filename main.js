@@ -33,6 +33,7 @@ var DEFAULT_SETTINGS = {
 };
 var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
   settings;
+  aliasCache = /* @__PURE__ */ new Map();
   async onload() {
     await this.loadSettings();
     this.registerEvent(
@@ -60,7 +61,7 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
           return false;
         }
         if (!checking) {
-          new FileMergeTargetModal(this.app, activeFile, this).open();
+          void this.openFileMergeTargetModal(activeFile);
         }
         return true;
       }
@@ -80,7 +81,7 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
           new import_obsidian.Notice("\u8BF7\u5148\u9009\u4E2D\u8981\u5408\u5E76\u7684\u5185\u5BB9\u3002");
           return;
         }
-        new SelectionMergeTargetModal(this.app, activeFile, editor, this).open();
+        void this.openSelectionMergeTargetModal(activeFile, editor);
       }
     });
     this.addSettingTab(new MergeOpenTargetSettingTab(this.app, this));
@@ -90,6 +91,32 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  async openFileMergeTargetModal(sourceFile) {
+    await this.populateAliasCache(sourceFile.path);
+    new FileMergeTargetModal(this.app, sourceFile, this).open();
+  }
+  async openSelectionMergeTargetModal(sourceFile, editor) {
+    await this.populateAliasCache(sourceFile.path);
+    new SelectionMergeTargetModal(this.app, sourceFile, editor, this).open();
+  }
+  async populateAliasCache(sourcePathToExclude) {
+    const markdownFiles = this.app.vault.getMarkdownFiles().filter((file) => file.path !== sourcePathToExclude);
+    await Promise.all(
+      markdownFiles.map(async (file) => {
+        const aliases = getAliases(file, this.app);
+        if (aliases.length > 0) {
+          this.aliasCache.set(file.path, aliases);
+          return;
+        }
+        try {
+          const content = await this.app.vault.cachedRead(file);
+          this.aliasCache.set(file.path, parseAliasesFromContent(content));
+        } catch {
+          this.aliasCache.set(file.path, []);
+        }
+      })
+    );
   }
   async mergeIntoTarget(sourceFile, targetFile) {
     if (sourceFile.path === targetFile.path) {
@@ -155,11 +182,20 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
       this.plugin.settings.recentFilePaths
     );
   }
+  getSuggestions(query) {
+    return getFileSuggestions(
+      this.getItems(),
+      query,
+      this.plugin.app,
+      this.plugin.aliasCache,
+      this.plugin.settings.recentFilePaths
+    );
+  }
   getItemText(file) {
-    return file.basename;
+    return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
+    renderFileSuggestion(match.item, el, this.plugin);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -199,11 +235,20 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
       this.plugin.settings.recentFilePaths
     );
   }
+  getSuggestions(query) {
+    return getFileSuggestions(
+      this.getItems(),
+      query,
+      this.plugin.app,
+      this.plugin.aliasCache,
+      this.plugin.settings.recentFilePaths
+    );
+  }
   getItemText(file) {
-    return file.basename;
+    return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
+    renderFileSuggestion(match.item, el, this.plugin);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -270,7 +315,7 @@ function joinContent(first, second, separator) {
   }
   return `${first}${separator}${second}`;
 }
-function renderFileSuggestion(file, el, recentFilePaths) {
+function renderFileSuggestion(file, el, plugin) {
   el.empty();
   el.addClass("mod-complex");
   const contentEl = el.createDiv({ cls: "suggestion-content" });
@@ -279,16 +324,139 @@ function renderFileSuggestion(file, el, recentFilePaths) {
     cls: "suggestion-title",
     text: file.basename
   });
-  if (recentFilePaths.includes(file.path)) {
+  if (plugin.settings.recentFilePaths.includes(file.path)) {
     titleRowEl.createSpan({
       cls: "suggestion-flair",
       text: "\u6700\u8FD1"
+    });
+  }
+  const aliases = getAliases(file, plugin.app, plugin.aliasCache);
+  if (aliases.length > 0) {
+    contentEl.createDiv({
+      cls: "suggestion-note",
+      text: `aliases: ${aliases.join(" / ")}`
     });
   }
   contentEl.createDiv({
     cls: "suggestion-note",
     text: file.path
   });
+}
+function getFileSearchText(plugin, file) {
+  const aliases = getAliases(file, plugin.app, plugin.aliasCache);
+  return [...aliases, file.basename, file.path].join(" ");
+}
+function getFileSuggestions(files, query, app, aliasCache, recentFilePaths) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+  if (!normalizedQuery) {
+    return files.map((file) => ({
+      item: file,
+      match: {
+        score: 0,
+        matches: []
+      }
+    }));
+  }
+  const search = (0, import_obsidian.prepareFuzzySearch)(normalizedQuery);
+  return files.map((file) => {
+    const aliases = getAliases(file, app, aliasCache);
+    const searchText = getSearchCorpus(file, aliases);
+    const match = search(searchText);
+    if (!match) {
+      return null;
+    }
+    const baseName = file.basename.toLocaleLowerCase();
+    const aliasExact = aliases.some((alias) => alias.toLocaleLowerCase() === normalizedQuery);
+    const aliasPrefix = aliases.some(
+      (alias) => alias.toLocaleLowerCase().startsWith(normalizedQuery)
+    );
+    const titleExact = baseName === normalizedQuery;
+    const titlePrefix = baseName.startsWith(normalizedQuery);
+    const recent = recentRank.get(file.path) ?? Number.POSITIVE_INFINITY;
+    return {
+      item: file,
+      match,
+      aliasExact,
+      aliasPrefix,
+      titleExact,
+      titlePrefix,
+      recent
+    };
+  }).filter((entry) => entry !== null).sort((a, b) => {
+    if (a.aliasExact !== b.aliasExact) {
+      return a.aliasExact ? -1 : 1;
+    }
+    if (a.titleExact !== b.titleExact) {
+      return a.titleExact ? -1 : 1;
+    }
+    if (a.aliasPrefix !== b.aliasPrefix) {
+      return a.aliasPrefix ? -1 : 1;
+    }
+    if (a.titlePrefix !== b.titlePrefix) {
+      return a.titlePrefix ? -1 : 1;
+    }
+    if (a.match.score !== b.match.score) {
+      return b.match.score - a.match.score;
+    }
+    if (a.item.basename === b.item.basename && a.recent !== b.recent) {
+      return a.recent - b.recent;
+    }
+    return a.item.path.localeCompare(b.item.path, "zh-Hans-CN");
+  }).map(({ item, match }) => ({ item, match }));
+}
+function getSearchCorpus(file, aliases) {
+  return [...aliases, file.basename, file.path].join(" \n ");
+}
+function getAliases(file, app, aliasCache) {
+  const cachedAliases = aliasCache?.get(file.path);
+  if (cachedAliases && cachedAliases.length > 0) {
+    return cachedAliases;
+  }
+  const cache = app?.metadataCache.getFileCache(file);
+  const rawAliases = cache?.frontmatter?.aliases;
+  if (typeof rawAliases === "string") {
+    return [rawAliases];
+  }
+  if (Array.isArray(rawAliases)) {
+    return rawAliases.filter((alias) => typeof alias === "string");
+  }
+  return [];
+}
+function parseAliasesFromContent(content) {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) {
+    return [];
+  }
+  const endMarkerIndex = normalized.indexOf("\n---\n", 4);
+  if (endMarkerIndex === -1) {
+    return [];
+  }
+  const frontmatter = normalized.slice(4, endMarkerIndex);
+  const inlineMatch = frontmatter.match(/^aliases:\s*\[(.*)\]\s*$/m);
+  if (inlineMatch) {
+    return inlineMatch[1].split(",").map((alias) => alias.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
+  }
+  const lines = frontmatter.split("\n");
+  const aliases = [];
+  let inAliasesBlock = false;
+  for (const line of lines) {
+    if (!inAliasesBlock && /^aliases:\s*$/.test(line.trim())) {
+      inAliasesBlock = true;
+      continue;
+    }
+    if (inAliasesBlock) {
+      const itemMatch = line.match(/^\s*-\s*(.+?)\s*$/);
+      if (itemMatch) {
+        aliases.push(itemMatch[1].trim().replace(/^['"]|['"]$/g, ""));
+        continue;
+      }
+      if (/^\S/.test(line) || /^[A-Za-z0-9_-]+:\s*/.test(line.trim())) {
+        break;
+      }
+    }
+  }
+  return aliases;
 }
 function sortCandidateFiles(files, recentFilePaths) {
   const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));

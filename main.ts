@@ -1,6 +1,7 @@
 import {
   App,
   Editor,
+  FuzzyMatch,
   FuzzySuggestModal,
   MarkdownView,
   Notice,
@@ -8,6 +9,7 @@ import {
   PluginSettingTab,
   Setting,
   TFile,
+  prepareFuzzySearch,
 } from "obsidian";
 
 interface MergeOpenTargetSettings {
@@ -28,6 +30,7 @@ const DEFAULT_SETTINGS: MergeOpenTargetSettings = {
 
 export default class MergeOpenTargetPlugin extends Plugin {
   settings!: MergeOpenTargetSettings;
+  aliasCache = new Map<string, string[]>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -61,7 +64,7 @@ export default class MergeOpenTargetPlugin extends Plugin {
         }
 
         if (!checking) {
-          new FileMergeTargetModal(this.app, activeFile, this).open();
+          void this.openFileMergeTargetModal(activeFile);
         }
         return true;
       },
@@ -85,7 +88,7 @@ export default class MergeOpenTargetPlugin extends Plugin {
           return;
         }
 
-        new SelectionMergeTargetModal(this.app, activeFile, editor, this).open();
+        void this.openSelectionMergeTargetModal(activeFile, editor);
       },
     });
 
@@ -98,6 +101,39 @@ export default class MergeOpenTargetPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  async openFileMergeTargetModal(sourceFile: TFile): Promise<void> {
+    await this.populateAliasCache(sourceFile.path);
+    new FileMergeTargetModal(this.app, sourceFile, this).open();
+  }
+
+  async openSelectionMergeTargetModal(sourceFile: TFile, editor: Editor): Promise<void> {
+    await this.populateAliasCache(sourceFile.path);
+    new SelectionMergeTargetModal(this.app, sourceFile, editor, this).open();
+  }
+
+  async populateAliasCache(sourcePathToExclude?: string): Promise<void> {
+    const markdownFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((file) => file.path !== sourcePathToExclude);
+
+    await Promise.all(
+      markdownFiles.map(async (file) => {
+        const aliases = getAliases(file, this.app);
+        if (aliases.length > 0) {
+          this.aliasCache.set(file.path, aliases);
+          return;
+        }
+
+        try {
+          const content = await this.app.vault.cachedRead(file);
+          this.aliasCache.set(file.path, parseAliasesFromContent(content));
+        } catch {
+          this.aliasCache.set(file.path, []);
+        }
+      }),
+    );
   }
 
   async mergeIntoTarget(sourceFile: TFile, targetFile: TFile): Promise<void> {
@@ -187,12 +223,22 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
     );
   }
 
+  getSuggestions(query: string): FuzzyMatch<TFile>[] {
+    return getFileSuggestions(
+      this.getItems(),
+      query,
+      this.plugin.app,
+      this.plugin.aliasCache,
+      this.plugin.settings.recentFilePaths,
+    );
+  }
+
   getItemText(file: TFile): string {
-    return file.basename;
+    return getFileSearchText(this.plugin, file);
   }
 
   renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
+    renderFileSuggestion(match.item, el, this.plugin);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -240,12 +286,22 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
     );
   }
 
+  getSuggestions(query: string): FuzzyMatch<TFile>[] {
+    return getFileSuggestions(
+      this.getItems(),
+      query,
+      this.plugin.app,
+      this.plugin.aliasCache,
+      this.plugin.settings.recentFilePaths,
+    );
+  }
+
   getItemText(file: TFile): string {
-    return file.basename;
+    return getFileSearchText(this.plugin, file);
   }
 
   renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
+    renderFileSuggestion(match.item, el, this.plugin);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -340,7 +396,11 @@ function joinContent(first: string, second: string, separator: string): string {
   return `${first}${separator}${second}`;
 }
 
-function renderFileSuggestion(file: TFile, el: HTMLElement, recentFilePaths: string[]): void {
+function renderFileSuggestion(
+  file: TFile,
+  el: HTMLElement,
+  plugin: MergeOpenTargetPlugin,
+): void {
   el.empty();
   el.addClass("mod-complex");
 
@@ -351,10 +411,18 @@ function renderFileSuggestion(file: TFile, el: HTMLElement, recentFilePaths: str
     text: file.basename,
   });
 
-  if (recentFilePaths.includes(file.path)) {
+  if (plugin.settings.recentFilePaths.includes(file.path)) {
     titleRowEl.createSpan({
       cls: "suggestion-flair",
       text: "最近",
+    });
+  }
+
+  const aliases = getAliases(file, plugin.app, plugin.aliasCache);
+  if (aliases.length > 0) {
+    contentEl.createDiv({
+      cls: "suggestion-note",
+      text: `aliases: ${aliases.join(" / ")}`,
     });
   }
 
@@ -362,6 +430,162 @@ function renderFileSuggestion(file: TFile, el: HTMLElement, recentFilePaths: str
     cls: "suggestion-note",
     text: file.path,
   });
+}
+
+function getFileSearchText(plugin: MergeOpenTargetPlugin, file: TFile): string {
+  const aliases = getAliases(file, plugin.app, plugin.aliasCache);
+  return [...aliases, file.basename, file.path].join(" ");
+}
+
+function getFileSuggestions(
+  files: TFile[],
+  query: string,
+  app: App,
+  aliasCache: Map<string, string[]>,
+  recentFilePaths: string[],
+): FuzzyMatch<TFile>[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+
+  if (!normalizedQuery) {
+    return files.map((file) => ({
+      item: file,
+      match: {
+        score: 0,
+        matches: [],
+      },
+    }));
+  }
+
+  const search = prepareFuzzySearch(normalizedQuery);
+
+  return files
+    .map((file) => {
+      const aliases = getAliases(file, app, aliasCache);
+      const searchText = getSearchCorpus(file, aliases);
+      const match = search(searchText);
+
+      if (!match) {
+        return null;
+      }
+
+      const baseName = file.basename.toLocaleLowerCase();
+      const aliasExact = aliases.some((alias) => alias.toLocaleLowerCase() === normalizedQuery);
+      const aliasPrefix = aliases.some((alias) =>
+        alias.toLocaleLowerCase().startsWith(normalizedQuery),
+      );
+      const titleExact = baseName === normalizedQuery;
+      const titlePrefix = baseName.startsWith(normalizedQuery);
+      const recent = recentRank.get(file.path) ?? Number.POSITIVE_INFINITY;
+
+      return {
+        item: file,
+        match,
+        aliasExact,
+        aliasPrefix,
+        titleExact,
+        titlePrefix,
+        recent,
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .sort((a, b) => {
+      if (a.aliasExact !== b.aliasExact) {
+        return a.aliasExact ? -1 : 1;
+      }
+
+      if (a.titleExact !== b.titleExact) {
+        return a.titleExact ? -1 : 1;
+      }
+
+      if (a.aliasPrefix !== b.aliasPrefix) {
+        return a.aliasPrefix ? -1 : 1;
+      }
+
+      if (a.titlePrefix !== b.titlePrefix) {
+        return a.titlePrefix ? -1 : 1;
+      }
+
+      if (a.match.score !== b.match.score) {
+        return b.match.score - a.match.score;
+      }
+
+      if (a.item.basename === b.item.basename && a.recent !== b.recent) {
+        return a.recent - b.recent;
+      }
+
+      return a.item.path.localeCompare(b.item.path, "zh-Hans-CN");
+    })
+    .map(({ item, match }) => ({ item, match }));
+}
+
+function getSearchCorpus(file: TFile, aliases: string[]): string {
+  return [...aliases, file.basename, file.path].join(" \n ");
+}
+
+function getAliases(file: TFile, app?: App, aliasCache?: Map<string, string[]>): string[] {
+  const cachedAliases = aliasCache?.get(file.path);
+  if (cachedAliases && cachedAliases.length > 0) {
+    return cachedAliases;
+  }
+
+  const cache = app?.metadataCache.getFileCache(file);
+  const rawAliases = cache?.frontmatter?.aliases;
+  if (typeof rawAliases === "string") {
+    return [rawAliases];
+  }
+
+  if (Array.isArray(rawAliases)) {
+    return rawAliases.filter((alias): alias is string => typeof alias === "string");
+  }
+
+  return [];
+}
+
+function parseAliasesFromContent(content: string): string[] {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) {
+    return [];
+  }
+
+  const endMarkerIndex = normalized.indexOf("\n---\n", 4);
+  if (endMarkerIndex === -1) {
+    return [];
+  }
+
+  const frontmatter = normalized.slice(4, endMarkerIndex);
+  const inlineMatch = frontmatter.match(/^aliases:\s*\[(.*)\]\s*$/m);
+  if (inlineMatch) {
+    return inlineMatch[1]
+      .split(",")
+      .map((alias) => alias.trim().replace(/^['"]|['"]$/g, ""))
+      .filter(Boolean);
+  }
+
+  const lines = frontmatter.split("\n");
+  const aliases: string[] = [];
+  let inAliasesBlock = false;
+
+  for (const line of lines) {
+    if (!inAliasesBlock && /^aliases:\s*$/.test(line.trim())) {
+      inAliasesBlock = true;
+      continue;
+    }
+
+    if (inAliasesBlock) {
+      const itemMatch = line.match(/^\s*-\s*(.+?)\s*$/);
+      if (itemMatch) {
+        aliases.push(itemMatch[1].trim().replace(/^['"]|['"]$/g, ""));
+        continue;
+      }
+
+      if (/^\S/.test(line) || /^[A-Za-z0-9_-]+:\s*/.test(line.trim())) {
+        break;
+      }
+    }
+  }
+
+  return aliases;
 }
 
 function sortCandidateFiles(files: TFile[], recentFilePaths: string[]): TFile[] {

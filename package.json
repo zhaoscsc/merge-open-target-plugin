@@ -1,6 +1,6 @@
 {
   "name": "merge-open-target",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Obsidian plugin to merge the current note into another note and open the target note.",
   "main": "main.js",
   "scripts": {
