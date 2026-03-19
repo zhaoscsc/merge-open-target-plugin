@@ -159,7 +159,7 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
     return file.basename;
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el);
+    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -203,7 +203,7 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
     return file.basename;
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el);
+    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -270,14 +270,21 @@ function joinContent(first, second, separator) {
   }
   return `${first}${separator}${second}`;
 }
-function renderFileSuggestion(file, el) {
+function renderFileSuggestion(file, el, recentFilePaths) {
   el.empty();
   el.addClass("mod-complex");
   const contentEl = el.createDiv({ cls: "suggestion-content" });
-  contentEl.createDiv({
+  const titleRowEl = contentEl.createDiv({ cls: "suggestion-title" });
+  titleRowEl.createSpan({
     cls: "suggestion-title",
     text: file.basename
   });
+  if (recentFilePaths.includes(file.path)) {
+    titleRowEl.createSpan({
+      cls: "suggestion-flair",
+      text: "\u6700\u8FD1"
+    });
+  }
   contentEl.createDiv({
     cls: "suggestion-note",
     text: file.path

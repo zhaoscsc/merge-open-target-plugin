@@ -43,7 +43,12 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
-## What's New in v0.1.1
+## What's New in v0.1.2
+
+- Show a subtle `最近` badge for recently opened note suggestions
+- Makes duplicate note titles easier to distinguish at a glance
+
+## Previous Update in v0.1.1
 
 - Search target notes by note title instead of full path
 - Still show full path in the suggestion list for disambiguation

@@ -192,7 +192,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el);
+    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -245,7 +245,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el);
+    renderFileSuggestion(match.item, el, this.plugin.settings.recentFilePaths);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -340,15 +340,23 @@ function joinContent(first: string, second: string, separator: string): string {
   return `${first}${separator}${second}`;
 }
 
-function renderFileSuggestion(file: TFile, el: HTMLElement): void {
+function renderFileSuggestion(file: TFile, el: HTMLElement, recentFilePaths: string[]): void {
   el.empty();
   el.addClass("mod-complex");
 
   const contentEl = el.createDiv({ cls: "suggestion-content" });
-  contentEl.createDiv({
+  const titleRowEl = contentEl.createDiv({ cls: "suggestion-title" });
+  titleRowEl.createSpan({
     cls: "suggestion-title",
     text: file.basename,
   });
+
+  if (recentFilePaths.includes(file.path)) {
+    titleRowEl.createSpan({
+      cls: "suggestion-flair",
+      text: "最近",
+    });
+  }
 
   contentEl.createDiv({
     cls: "suggestion-note",
