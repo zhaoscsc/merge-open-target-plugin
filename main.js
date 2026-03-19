@@ -28,12 +28,28 @@ var DEFAULT_SETTINGS = {
   mergePosition: "append",
   separator: "\n\n",
   trashSourceAfterMerge: true,
-  confirmBeforeMerge: true
+  confirmBeforeMerge: true,
+  recentFilePaths: []
 };
 var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
   settings;
   async onload() {
     await this.loadSettings();
+    this.registerEvent(
+      this.app.workspace.on("file-open", async (file) => {
+        if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+          return;
+        }
+        const updatedRecentPaths = [
+          file.path,
+          ...this.settings.recentFilePaths.filter((path) => path !== file.path)
+        ].slice(0, 100);
+        if (!isSamePathList(updatedRecentPaths, this.settings.recentFilePaths)) {
+          this.settings.recentFilePaths = updatedRecentPaths;
+          await this.saveSettings();
+        }
+      })
+    );
     this.addCommand({
       id: "merge-current-file-into-another-and-open-target",
       name: "Merge current file into another note and open target",
@@ -134,10 +150,16 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
     ]);
   }
   getItems() {
-    return this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path).sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
+    return sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths
+    );
   }
   getItemText(file) {
-    return file.path;
+    return file.basename;
+  }
+  renderSuggestion(match, el) {
+    renderFileSuggestion(match.item, el);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -172,10 +194,16 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
   }
   selectedText;
   getItems() {
-    return this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path).sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
+    return sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths
+    );
   }
   getItemText(file) {
-    return file.path;
+    return file.basename;
+  }
+  renderSuggestion(match, el) {
+    renderFileSuggestion(match.item, el);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -241,6 +269,40 @@ function joinContent(first, second, separator) {
     return first;
   }
   return `${first}${separator}${second}`;
+}
+function renderFileSuggestion(file, el) {
+  el.empty();
+  el.addClass("mod-complex");
+  const contentEl = el.createDiv({ cls: "suggestion-content" });
+  contentEl.createDiv({
+    cls: "suggestion-title",
+    text: file.basename
+  });
+  contentEl.createDiv({
+    cls: "suggestion-note",
+    text: file.path
+  });
+}
+function sortCandidateFiles(files, recentFilePaths) {
+  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+  return [...files].sort((a, b) => {
+    const baseNameCompare = a.basename.localeCompare(b.basename, "zh-Hans-CN");
+    if (baseNameCompare !== 0) {
+      return baseNameCompare;
+    }
+    const aRank = recentRank.get(a.path) ?? Number.POSITIVE_INFINITY;
+    const bRank = recentRank.get(b.path) ?? Number.POSITIVE_INFINITY;
+    if (aRank !== bRank) {
+      return aRank - bRank;
+    }
+    return a.path.localeCompare(b.path, "zh-Hans-CN");
+  });
+}
+function isSamePathList(a, b) {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((path, index) => path === b[index]);
 }
 function stripFrontmatter(content) {
   const normalized = content.replace(/\r\n/g, "\n");

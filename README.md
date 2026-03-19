@@ -43,6 +43,12 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
+## What's New in v0.1.1
+
+- Search target notes by note title instead of full path
+- Still show full path in the suggestion list for disambiguation
+- When duplicate note titles exist, prioritize the note you opened most recently
+
 ## Settings
 
 - Merge position: append to end or prepend to beginning

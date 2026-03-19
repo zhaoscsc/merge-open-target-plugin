@@ -15,6 +15,7 @@ interface MergeOpenTargetSettings {
   separator: string;
   trashSourceAfterMerge: boolean;
   confirmBeforeMerge: boolean;
+  recentFilePaths: string[];
 }
 
 const DEFAULT_SETTINGS: MergeOpenTargetSettings = {
@@ -22,6 +23,7 @@ const DEFAULT_SETTINGS: MergeOpenTargetSettings = {
   separator: "\n\n",
   trashSourceAfterMerge: true,
   confirmBeforeMerge: true,
+  recentFilePaths: [],
 };
 
 export default class MergeOpenTargetPlugin extends Plugin {
@@ -29,6 +31,24 @@ export default class MergeOpenTargetPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", async (file) => {
+        if (!(file instanceof TFile) || file.extension !== "md") {
+          return;
+        }
+
+        const updatedRecentPaths = [
+          file.path,
+          ...this.settings.recentFilePaths.filter((path) => path !== file.path),
+        ].slice(0, 100);
+
+        if (!isSamePathList(updatedRecentPaths, this.settings.recentFilePaths)) {
+          this.settings.recentFilePaths = updatedRecentPaths;
+          await this.saveSettings();
+        }
+      }),
+    );
 
     this.addCommand({
       id: "merge-current-file-into-another-and-open-target",
@@ -161,14 +181,18 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   getItems(): TFile[] {
-    return this.app.vault
-      .getMarkdownFiles()
-      .filter((file) => file.path !== this.sourceFile.path)
-      .sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
+    return sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths,
+    );
   }
 
   getItemText(file: TFile): string {
-    return file.path;
+    return file.basename;
+  }
+
+  renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
+    renderFileSuggestion(match.item, el);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -210,14 +234,18 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   getItems(): TFile[] {
-    return this.app.vault
-      .getMarkdownFiles()
-      .filter((file) => file.path !== this.sourceFile.path)
-      .sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"));
+    return sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths,
+    );
   }
 
   getItemText(file: TFile): string {
-    return file.path;
+    return file.basename;
+  }
+
+  renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
+    renderFileSuggestion(match.item, el);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -310,6 +338,49 @@ function joinContent(first: string, second: string, separator: string): string {
     return first;
   }
   return `${first}${separator}${second}`;
+}
+
+function renderFileSuggestion(file: TFile, el: HTMLElement): void {
+  el.empty();
+  el.addClass("mod-complex");
+
+  const contentEl = el.createDiv({ cls: "suggestion-content" });
+  contentEl.createDiv({
+    cls: "suggestion-title",
+    text: file.basename,
+  });
+
+  contentEl.createDiv({
+    cls: "suggestion-note",
+    text: file.path,
+  });
+}
+
+function sortCandidateFiles(files: TFile[], recentFilePaths: string[]): TFile[] {
+  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+
+  return [...files].sort((a, b) => {
+    const baseNameCompare = a.basename.localeCompare(b.basename, "zh-Hans-CN");
+    if (baseNameCompare !== 0) {
+      return baseNameCompare;
+    }
+
+    const aRank = recentRank.get(a.path) ?? Number.POSITIVE_INFINITY;
+    const bRank = recentRank.get(b.path) ?? Number.POSITIVE_INFINITY;
+    if (aRank !== bRank) {
+      return aRank - bRank;
+    }
+
+    return a.path.localeCompare(b.path, "zh-Hans-CN");
+  });
+}
+
+function isSamePathList(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  return a.every((path, index) => path === b[index]);
 }
 
 function stripFrontmatter(content: string): string {
