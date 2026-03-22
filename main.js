@@ -37,6 +37,31 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
   async onload() {
     await this.loadSettings();
     this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        if (file instanceof import_obsidian.TFile) {
+          this.refreshAliasCacheForFile(file);
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+          return;
+        }
+        if (oldPath && oldPath !== file.path) {
+          this.aliasCache.delete(oldPath);
+        }
+        this.refreshAliasCacheForFile(file);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file instanceof import_obsidian.TFile) {
+          this.aliasCache.delete(file.path);
+        }
+      })
+    );
+    this.registerEvent(
       this.app.workspace.on("file-open", async (file) => {
         if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
           return;
@@ -93,30 +118,16 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
     await this.saveData(this.settings);
   }
   async openFileMergeTargetModal(sourceFile) {
-    await this.populateAliasCache(sourceFile.path);
     new FileMergeTargetModal(this.app, sourceFile, this).open();
   }
   async openSelectionMergeTargetModal(sourceFile, editor) {
-    await this.populateAliasCache(sourceFile.path);
     new SelectionMergeTargetModal(this.app, sourceFile, editor, this).open();
   }
-  async populateAliasCache(sourcePathToExclude) {
-    const markdownFiles = this.app.vault.getMarkdownFiles().filter((file) => file.path !== sourcePathToExclude);
-    await Promise.all(
-      markdownFiles.map(async (file) => {
-        const aliases = getAliases(file, this.app);
-        if (aliases.length > 0) {
-          this.aliasCache.set(file.path, aliases);
-          return;
-        }
-        try {
-          const content = await this.app.vault.cachedRead(file);
-          this.aliasCache.set(file.path, parseAliasesFromContent(content));
-        } catch {
-          this.aliasCache.set(file.path, []);
-        }
-      })
-    );
+  refreshAliasCacheForFile(file) {
+    if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+      return;
+    }
+    this.aliasCache.set(file.path, readAliasesFromMetadata(file, this.app));
   }
   async mergeIntoTarget(sourceFile, targetFile) {
     if (sourceFile.path === targetFile.path) {
@@ -410,9 +421,14 @@ function getSearchCorpus(file, aliases) {
 }
 function getAliases(file, app, aliasCache) {
   const cachedAliases = aliasCache?.get(file.path);
-  if (cachedAliases && cachedAliases.length > 0) {
+  if (cachedAliases) {
     return cachedAliases;
   }
+  const aliases = readAliasesFromMetadata(file, app);
+  aliasCache?.set(file.path, aliases);
+  return aliases;
+}
+function readAliasesFromMetadata(file, app) {
   const cache = app?.metadataCache.getFileCache(file);
   const rawAliases = cache?.frontmatter?.aliases;
   if (typeof rawAliases === "string") {
@@ -422,41 +438,6 @@ function getAliases(file, app, aliasCache) {
     return rawAliases.filter((alias) => typeof alias === "string");
   }
   return [];
-}
-function parseAliasesFromContent(content) {
-  const normalized = content.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) {
-    return [];
-  }
-  const endMarkerIndex = normalized.indexOf("\n---\n", 4);
-  if (endMarkerIndex === -1) {
-    return [];
-  }
-  const frontmatter = normalized.slice(4, endMarkerIndex);
-  const inlineMatch = frontmatter.match(/^aliases:\s*\[(.*)\]\s*$/m);
-  if (inlineMatch) {
-    return inlineMatch[1].split(",").map((alias) => alias.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
-  }
-  const lines = frontmatter.split("\n");
-  const aliases = [];
-  let inAliasesBlock = false;
-  for (const line of lines) {
-    if (!inAliasesBlock && /^aliases:\s*$/.test(line.trim())) {
-      inAliasesBlock = true;
-      continue;
-    }
-    if (inAliasesBlock) {
-      const itemMatch = line.match(/^\s*-\s*(.+?)\s*$/);
-      if (itemMatch) {
-        aliases.push(itemMatch[1].trim().replace(/^['"]|['"]$/g, ""));
-        continue;
-      }
-      if (/^\S/.test(line) || /^[A-Za-z0-9_-]+:\s*/.test(line.trim())) {
-        break;
-      }
-    }
-  }
-  return aliases;
 }
 function sortCandidateFiles(files, recentFilePaths) {
   const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));

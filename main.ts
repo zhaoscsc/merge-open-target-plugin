@@ -36,6 +36,36 @@ export default class MergeOpenTargetPlugin extends Plugin {
     await this.loadSettings();
 
     this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        if (file instanceof TFile) {
+          this.refreshAliasCacheForFile(file);
+        }
+      }),
+    );
+
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (!(file instanceof TFile) || file.extension !== "md") {
+          return;
+        }
+
+        if (oldPath && oldPath !== file.path) {
+          this.aliasCache.delete(oldPath);
+        }
+
+        this.refreshAliasCacheForFile(file);
+      }),
+    );
+
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file instanceof TFile) {
+          this.aliasCache.delete(file.path);
+        }
+      }),
+    );
+
+    this.registerEvent(
       this.app.workspace.on("file-open", async (file) => {
         if (!(file instanceof TFile) || file.extension !== "md") {
           return;
@@ -104,36 +134,19 @@ export default class MergeOpenTargetPlugin extends Plugin {
   }
 
   async openFileMergeTargetModal(sourceFile: TFile): Promise<void> {
-    await this.populateAliasCache(sourceFile.path);
     new FileMergeTargetModal(this.app, sourceFile, this).open();
   }
 
   async openSelectionMergeTargetModal(sourceFile: TFile, editor: Editor): Promise<void> {
-    await this.populateAliasCache(sourceFile.path);
     new SelectionMergeTargetModal(this.app, sourceFile, editor, this).open();
   }
 
-  async populateAliasCache(sourcePathToExclude?: string): Promise<void> {
-    const markdownFiles = this.app.vault
-      .getMarkdownFiles()
-      .filter((file) => file.path !== sourcePathToExclude);
+  refreshAliasCacheForFile(file: TFile): void {
+    if (!(file instanceof TFile) || file.extension !== "md") {
+      return;
+    }
 
-    await Promise.all(
-      markdownFiles.map(async (file) => {
-        const aliases = getAliases(file, this.app);
-        if (aliases.length > 0) {
-          this.aliasCache.set(file.path, aliases);
-          return;
-        }
-
-        try {
-          const content = await this.app.vault.cachedRead(file);
-          this.aliasCache.set(file.path, parseAliasesFromContent(content));
-        } catch {
-          this.aliasCache.set(file.path, []);
-        }
-      }),
-    );
+    this.aliasCache.set(file.path, readAliasesFromMetadata(file, this.app));
   }
 
   async mergeIntoTarget(sourceFile: TFile, targetFile: TFile): Promise<void> {
@@ -525,10 +538,16 @@ function getSearchCorpus(file: TFile, aliases: string[]): string {
 
 function getAliases(file: TFile, app?: App, aliasCache?: Map<string, string[]>): string[] {
   const cachedAliases = aliasCache?.get(file.path);
-  if (cachedAliases && cachedAliases.length > 0) {
+  if (cachedAliases) {
     return cachedAliases;
   }
 
+  const aliases = readAliasesFromMetadata(file, app);
+  aliasCache?.set(file.path, aliases);
+  return aliases;
+}
+
+function readAliasesFromMetadata(file: TFile, app?: App): string[] {
   const cache = app?.metadataCache.getFileCache(file);
   const rawAliases = cache?.frontmatter?.aliases;
   if (typeof rawAliases === "string") {
@@ -540,52 +559,6 @@ function getAliases(file: TFile, app?: App, aliasCache?: Map<string, string[]>):
   }
 
   return [];
-}
-
-function parseAliasesFromContent(content: string): string[] {
-  const normalized = content.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) {
-    return [];
-  }
-
-  const endMarkerIndex = normalized.indexOf("\n---\n", 4);
-  if (endMarkerIndex === -1) {
-    return [];
-  }
-
-  const frontmatter = normalized.slice(4, endMarkerIndex);
-  const inlineMatch = frontmatter.match(/^aliases:\s*\[(.*)\]\s*$/m);
-  if (inlineMatch) {
-    return inlineMatch[1]
-      .split(",")
-      .map((alias) => alias.trim().replace(/^['"]|['"]$/g, ""))
-      .filter(Boolean);
-  }
-
-  const lines = frontmatter.split("\n");
-  const aliases: string[] = [];
-  let inAliasesBlock = false;
-
-  for (const line of lines) {
-    if (!inAliasesBlock && /^aliases:\s*$/.test(line.trim())) {
-      inAliasesBlock = true;
-      continue;
-    }
-
-    if (inAliasesBlock) {
-      const itemMatch = line.match(/^\s*-\s*(.+?)\s*$/);
-      if (itemMatch) {
-        aliases.push(itemMatch[1].trim().replace(/^['"]|['"]$/g, ""));
-        continue;
-      }
-
-      if (/^\S/.test(line) || /^[A-Za-z0-9_-]+:\s*/.test(line.trim())) {
-        break;
-      }
-    }
-  }
-
-  return aliases;
 }
 
 function sortCandidateFiles(files: TFile[], recentFilePaths: string[]): TFile[] {
