@@ -43,7 +43,13 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
-## What's New in v0.1.3
+## What's New in v0.1.4
+
+- Improve target-note search performance in large vaults
+- Remove the full-vault alias pre-scan before opening the picker
+- Read aliases from Obsidian metadata cache instead
+
+## Previous Update in v0.1.3
 
 - Search target notes by `aliases` in addition to the note title
 - Example: searching `XAI` can now find a note titled `grok` if `XAI` is listed in frontmatter aliases
@@ -69,15 +75,29 @@ This plugin exists to make that workflow feel faster and more direct.
 
 ## Install
 
+### Install with BRAT
+
+1. Install the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin in Obsidian.
+2. Open the BRAT plugin settings.
+3. Choose `Add Beta plugin`.
+4. Paste this repository URL:
+
+```text
+https://github.com/zhaoscsc/merge-open-target-plugin
+```
+
+5. Confirm and let BRAT install the plugin.
+6. Enable `Merge And Open Target` in Community plugins if it is not enabled automatically.
+
 ### Manual install
 
-Copy these files into your vault at `.obsidian/plugins/merge-open-target/`:
+Download the latest release files and copy them into your vault at `.obsidian/plugins/merge-open-target/`:
 
 - `main.js`
 - `manifest.json`
 - `versions.json`
 
-Then reload community plugins in Obsidian.
+Then reload community plugins in Obsidian and enable `Merge And Open Target`.
 
 ## Development
 
