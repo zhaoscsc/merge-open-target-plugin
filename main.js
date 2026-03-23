@@ -442,13 +442,13 @@ function readAliasesFromMetadata(file, app) {
 function sortCandidateFiles(files, recentFilePaths) {
   const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
   return [...files].sort((a, b) => {
-    const baseNameCompare = a.basename.localeCompare(b.basename, "zh-Hans-CN");
-    if (baseNameCompare !== 0) {
-      return baseNameCompare;
+    const modifiedTimeDiff = b.stat.mtime - a.stat.mtime;
+    if (modifiedTimeDiff !== 0) {
+      return modifiedTimeDiff;
     }
     const aRank = recentRank.get(a.path) ?? Number.POSITIVE_INFINITY;
     const bRank = recentRank.get(b.path) ?? Number.POSITIVE_INFINITY;
-    if (aRank !== bRank) {
+    if (a.basename === b.basename && aRank !== bRank) {
       return aRank - bRank;
     }
     return a.path.localeCompare(b.path, "zh-Hans-CN");

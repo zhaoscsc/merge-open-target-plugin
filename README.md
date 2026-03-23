@@ -43,7 +43,12 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
-## What's New in v0.1.4
+## What's New in v0.1.5
+
+- Show default target suggestions by recently modified notes when the picker first opens
+- Keep typed search results sorted by search relevance instead of recency
+
+## Previous Update in v0.1.4
 
 - Improve target-note search performance in large vaults
 - Remove the full-vault alias pre-scan before opening the picker
