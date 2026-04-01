@@ -27,6 +27,7 @@ var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
   mergePosition: "append",
   separator: "\n\n",
+  updateLinksAfterMerge: true,
   trashSourceAfterMerge: true,
   confirmBeforeMerge: true,
   recentFilePaths: []
@@ -134,10 +135,32 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice("\u6E90\u7B14\u8BB0\u548C\u76EE\u6807\u7B14\u8BB0\u4E0D\u80FD\u662F\u540C\u4E00\u7BC7\u3002");
       return;
     }
-    const sourceContent = stripFrontmatter(await this.app.vault.cachedRead(sourceFile));
-    const targetContent = await this.app.vault.cachedRead(targetFile);
+    const shouldUpdateLinks = this.settings.updateLinksAfterMerge;
+    const referrerFiles = shouldUpdateLinks ? getMarkdownReferrersToFile(this.app, sourceFile.path).filter(
+      (file) => file.path !== sourceFile.path && file.path !== targetFile.path
+    ) : [];
+    const sourceRawContent = await this.app.vault.cachedRead(sourceFile);
+    const processedSourceRawContent = shouldUpdateLinks ? rewriteLinksInFileContent(
+      this.app,
+      sourceRawContent,
+      sourceFile,
+      sourceFile,
+      targetFile
+    ) : sourceRawContent;
+    const sourceContent = stripFrontmatter(processedSourceRawContent);
+    const targetOriginalContent = await this.app.vault.cachedRead(targetFile);
+    const targetContent = shouldUpdateLinks ? rewriteLinksInFileContent(
+      this.app,
+      targetOriginalContent,
+      targetFile,
+      sourceFile,
+      targetFile
+    ) : targetOriginalContent;
     const mergedContent = this.buildMergedContent(sourceContent, targetContent);
     await this.app.vault.modify(targetFile, mergedContent);
+    if (shouldUpdateLinks) {
+      await rewriteLinksInFiles(this.app, referrerFiles, sourceFile, targetFile);
+    }
     if (this.settings.trashSourceAfterMerge) {
       await this.app.fileManager.trashFile(sourceFile);
     }
@@ -309,6 +332,14 @@ var MergeOpenTargetSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian.Setting(containerEl).setName("\u6574\u7BC7\u5408\u5E76\u540E\u540C\u6B65\u66F4\u65B0\u6307\u5411\u6E90\u7B14\u8BB0\u7684\u94FE\u63A5").setDesc(
+      "\u4EC5\u5BF9\u201C\u6574\u7BC7\u5408\u5E76\u201D\u751F\u6548\u3002\u5F00\u542F\u540E\uFF0C\u4F1A\u628A\u6240\u6709\u5DF2\u89E3\u6790\u5230\u6E90\u7B14\u8BB0\u7684\u53CC\u94FE\u4E0E embed \u94FE\u63A5\u6539\u5199\u4E3A\u6307\u5411\u76EE\u6807\u7B14\u8BB0\u3002"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.updateLinksAfterMerge).onChange(async (value) => {
+        this.plugin.settings.updateLinksAfterMerge = value;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian.Setting(containerEl).setName("\u5408\u5E76\u524D\u786E\u8BA4").setDesc("\u5F00\u542F\u540E\uFF0C\u6267\u884C\u5408\u5E76\u524D\u4F1A\u518D\u5F39\u4E00\u6B21\u786E\u8BA4\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.confirmBeforeMerge).onChange(async (value) => {
         this.plugin.settings.confirmBeforeMerge = value;
@@ -325,6 +356,113 @@ function joinContent(first, second, separator) {
     return first;
   }
   return `${first}${separator}${second}`;
+}
+function getMarkdownReferrersToFile(app, targetPath) {
+  const resolvedLinks = app.metadataCache.resolvedLinks ?? {};
+  return Object.entries(resolvedLinks).filter(([, links]) => (links?.[targetPath] ?? 0) > 0).map(([sourcePath]) => app.vault.getAbstractFileByPath(sourcePath)).filter((file) => file instanceof import_obsidian.TFile && file.extension === "md");
+}
+async function rewriteLinksInFiles(app, files, sourceFile, targetFile) {
+  for (const file of files) {
+    const originalContent = await app.vault.cachedRead(file);
+    const updatedContent = rewriteLinksInFileContent(
+      app,
+      originalContent,
+      file,
+      sourceFile,
+      targetFile
+    );
+    if (updatedContent !== originalContent) {
+      await app.vault.modify(file, updatedContent);
+    }
+  }
+}
+function rewriteLinksInFileContent(app, content, referrerFile, sourceFile, targetFile) {
+  const fileCache = app.metadataCache.getFileCache(referrerFile);
+  if (!fileCache) {
+    return content;
+  }
+  const frontmatterEndOffset = getFrontmatterEndOffset(content);
+  const replacements = collectLinkReplacements(
+    app,
+    fileCache.links ?? [],
+    false,
+    referrerFile.path,
+    sourceFile,
+    targetFile,
+    content,
+    frontmatterEndOffset
+  ).concat(
+    collectLinkReplacements(
+      app,
+      fileCache.embeds ?? [],
+      true,
+      referrerFile.path,
+      sourceFile,
+      targetFile,
+      content,
+      frontmatterEndOffset
+    )
+  ).sort((a, b) => b.start - a.start);
+  if (replacements.length === 0) {
+    return content;
+  }
+  let nextContent = content;
+  for (const replacement of replacements) {
+    nextContent = `${nextContent.slice(0, replacement.start)}${replacement.text}${nextContent.slice(replacement.end)}`;
+  }
+  return nextContent;
+}
+function collectLinkReplacements(app, references, isEmbed, referrerPath, sourceFile, targetFile, content, frontmatterEndOffset) {
+  return references.flatMap((reference) => {
+    const startOffset = reference.position?.start?.offset;
+    const endOffset = reference.position?.end?.offset;
+    if (typeof startOffset !== "number" || typeof endOffset !== "number" || startOffset >= endOffset) {
+      return [];
+    }
+    if (frontmatterEndOffset > 0 && startOffset < frontmatterEndOffset) {
+      return [];
+    }
+    const parsed = (0, import_obsidian.parseLinktext)(reference.link);
+    const resolvedFile = app.metadataCache.getFirstLinkpathDest(parsed.path, referrerPath);
+    if (!resolvedFile || resolvedFile.path !== sourceFile.path) {
+      return [];
+    }
+    const currentText = content.slice(startOffset, endOffset);
+    const nextText = buildReplacementReference(
+      app,
+      targetFile,
+      referrerPath,
+      parsed.subpath,
+      reference.displayText,
+      isEmbed
+    );
+    if (!currentText || currentText === nextText) {
+      return [];
+    }
+    return [
+      {
+        start: startOffset,
+        end: endOffset,
+        text: nextText
+      }
+    ];
+  });
+}
+function buildReplacementReference(app, targetFile, referrerPath, subpath, displayText, isEmbed) {
+  const replacement = app.fileManager.generateMarkdownLink(
+    targetFile,
+    referrerPath,
+    subpath || void 0,
+    displayText
+  );
+  if (isEmbed && !replacement.startsWith("!")) {
+    return `!${replacement}`;
+  }
+  return replacement;
+}
+function getFrontmatterEndOffset(content) {
+  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/);
+  return match ? match[0].length : 0;
 }
 function renderFileSuggestion(file, el, plugin) {
   el.empty();

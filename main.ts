@@ -5,8 +5,10 @@ import {
   FuzzySuggestModal,
   MarkdownView,
   Notice,
+  parseLinktext,
   Plugin,
   PluginSettingTab,
+  ReferenceCache,
   Setting,
   TFile,
   prepareFuzzySearch,
@@ -15,6 +17,7 @@ import {
 interface MergeOpenTargetSettings {
   mergePosition: "append" | "prepend";
   separator: string;
+  updateLinksAfterMerge: boolean;
   trashSourceAfterMerge: boolean;
   confirmBeforeMerge: boolean;
   recentFilePaths: string[];
@@ -23,6 +26,7 @@ interface MergeOpenTargetSettings {
 const DEFAULT_SETTINGS: MergeOpenTargetSettings = {
   mergePosition: "append",
   separator: "\n\n",
+  updateLinksAfterMerge: true,
   trashSourceAfterMerge: true,
   confirmBeforeMerge: true,
   recentFilePaths: [],
@@ -155,11 +159,42 @@ export default class MergeOpenTargetPlugin extends Plugin {
       return;
     }
 
-    const sourceContent = stripFrontmatter(await this.app.vault.cachedRead(sourceFile));
-    const targetContent = await this.app.vault.cachedRead(targetFile);
+    const shouldUpdateLinks = this.settings.updateLinksAfterMerge;
+    const referrerFiles = shouldUpdateLinks
+      ? getMarkdownReferrersToFile(this.app, sourceFile.path).filter(
+          (file) => file.path !== sourceFile.path && file.path !== targetFile.path,
+        )
+      : [];
+
+    const sourceRawContent = await this.app.vault.cachedRead(sourceFile);
+    const processedSourceRawContent = shouldUpdateLinks
+      ? rewriteLinksInFileContent(
+          this.app,
+          sourceRawContent,
+          sourceFile,
+          sourceFile,
+          targetFile,
+        )
+      : sourceRawContent;
+
+    const sourceContent = stripFrontmatter(processedSourceRawContent);
+    const targetOriginalContent = await this.app.vault.cachedRead(targetFile);
+    const targetContent = shouldUpdateLinks
+      ? rewriteLinksInFileContent(
+          this.app,
+          targetOriginalContent,
+          targetFile,
+          sourceFile,
+          targetFile,
+        )
+      : targetOriginalContent;
     const mergedContent = this.buildMergedContent(sourceContent, targetContent);
 
     await this.app.vault.modify(targetFile, mergedContent);
+
+    if (shouldUpdateLinks) {
+      await rewriteLinksInFiles(this.app, referrerFiles, sourceFile, targetFile);
+    }
 
     if (this.settings.trashSourceAfterMerge) {
       await this.app.fileManager.trashFile(sourceFile);
@@ -388,6 +423,18 @@ class MergeOpenTargetSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("整篇合并后同步更新指向源笔记的链接")
+      .setDesc(
+        "仅对“整篇合并”生效。开启后，会把所有已解析到源笔记的双链与 embed 链接改写为指向目标笔记。",
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.updateLinksAfterMerge).onChange(async (value) => {
+          this.plugin.settings.updateLinksAfterMerge = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
       .setName("合并前确认")
       .setDesc("开启后，执行合并前会再弹一次确认。")
       .addToggle((toggle) =>
@@ -407,6 +454,169 @@ function joinContent(first: string, second: string, separator: string): string {
     return first;
   }
   return `${first}${separator}${second}`;
+}
+
+function getMarkdownReferrersToFile(app: App, targetPath: string): TFile[] {
+  const resolvedLinks = app.metadataCache.resolvedLinks ?? {};
+
+  return Object.entries(resolvedLinks)
+    .filter(([, links]) => (links?.[targetPath] ?? 0) > 0)
+    .map(([sourcePath]) => app.vault.getAbstractFileByPath(sourcePath))
+    .filter((file): file is TFile => file instanceof TFile && file.extension === "md");
+}
+
+async function rewriteLinksInFiles(
+  app: App,
+  files: TFile[],
+  sourceFile: TFile,
+  targetFile: TFile,
+): Promise<void> {
+  for (const file of files) {
+    const originalContent = await app.vault.cachedRead(file);
+    const updatedContent = rewriteLinksInFileContent(
+      app,
+      originalContent,
+      file,
+      sourceFile,
+      targetFile,
+    );
+
+    if (updatedContent !== originalContent) {
+      await app.vault.modify(file, updatedContent);
+    }
+  }
+}
+
+function rewriteLinksInFileContent(
+  app: App,
+  content: string,
+  referrerFile: TFile,
+  sourceFile: TFile,
+  targetFile: TFile,
+): string {
+  const fileCache = app.metadataCache.getFileCache(referrerFile);
+  if (!fileCache) {
+    return content;
+  }
+
+  const frontmatterEndOffset = getFrontmatterEndOffset(content);
+  const replacements = collectLinkReplacements(
+    app,
+    fileCache.links ?? [],
+    false,
+    referrerFile.path,
+    sourceFile,
+    targetFile,
+    content,
+    frontmatterEndOffset,
+  )
+    .concat(
+      collectLinkReplacements(
+        app,
+        fileCache.embeds ?? [],
+        true,
+        referrerFile.path,
+        sourceFile,
+        targetFile,
+        content,
+        frontmatterEndOffset,
+      ),
+    )
+    .sort((a, b) => b.start - a.start);
+
+  if (replacements.length === 0) {
+    return content;
+  }
+
+  let nextContent = content;
+  for (const replacement of replacements) {
+    nextContent = `${nextContent.slice(0, replacement.start)}${replacement.text}${nextContent.slice(replacement.end)}`;
+  }
+
+  return nextContent;
+}
+
+function collectLinkReplacements(
+  app: App,
+  references: ReferenceCache[],
+  isEmbed: boolean,
+  referrerPath: string,
+  sourceFile: TFile,
+  targetFile: TFile,
+  content: string,
+  frontmatterEndOffset: number,
+): Array<{ start: number; end: number; text: string }> {
+  return references.flatMap((reference) => {
+    const startOffset = reference.position?.start?.offset;
+    const endOffset = reference.position?.end?.offset;
+
+    if (
+      typeof startOffset !== "number" ||
+      typeof endOffset !== "number" ||
+      startOffset >= endOffset
+    ) {
+      return [];
+    }
+
+    if (frontmatterEndOffset > 0 && startOffset < frontmatterEndOffset) {
+      return [];
+    }
+
+    const parsed = parseLinktext(reference.link);
+    const resolvedFile = app.metadataCache.getFirstLinkpathDest(parsed.path, referrerPath);
+    if (!resolvedFile || resolvedFile.path !== sourceFile.path) {
+      return [];
+    }
+
+    const currentText = content.slice(startOffset, endOffset);
+    const nextText = buildReplacementReference(
+      app,
+      targetFile,
+      referrerPath,
+      parsed.subpath,
+      reference.displayText,
+      isEmbed,
+    );
+
+    if (!currentText || currentText === nextText) {
+      return [];
+    }
+
+    return [
+      {
+        start: startOffset,
+        end: endOffset,
+        text: nextText,
+      },
+    ];
+  });
+}
+
+function buildReplacementReference(
+  app: App,
+  targetFile: TFile,
+  referrerPath: string,
+  subpath: string,
+  displayText: string | undefined,
+  isEmbed: boolean,
+): string {
+  const replacement = app.fileManager.generateMarkdownLink(
+    targetFile,
+    referrerPath,
+    subpath || undefined,
+    displayText,
+  );
+
+  if (isEmbed && !replacement.startsWith("!")) {
+    return `!${replacement}`;
+  }
+
+  return replacement;
+}
+
+function getFrontmatterEndOffset(content: string): number {
+  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/);
+  return match ? match[0].length : 0;
 }
 
 function renderFileSuggestion(
