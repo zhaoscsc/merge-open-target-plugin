@@ -1,7 +1,7 @@
 {
   "id": "merge-open-target",
   "name": "Merge And Open Target",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "minAppVersion": "1.5.0",
   "description": "Merge the current note into another note, then automatically open the target note.",
   "author": "Codex",

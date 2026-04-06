@@ -213,7 +213,8 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
   getItems() {
     return sortCandidateFiles(
       this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
-      this.plugin.settings.recentFilePaths
+      this.plugin.settings.recentFilePaths,
+      this.sourceFile
     );
   }
   getSuggestions(query) {
@@ -229,7 +230,7 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
     return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el, this.plugin);
+    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -266,7 +267,8 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
   getItems() {
     return sortCandidateFiles(
       this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
-      this.plugin.settings.recentFilePaths
+      this.plugin.settings.recentFilePaths,
+      this.sourceFile
     );
   }
   getSuggestions(query) {
@@ -282,7 +284,7 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
     return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el, this.plugin);
+    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -464,7 +466,7 @@ function getFrontmatterEndOffset(content) {
   const match = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/);
   return match ? match[0].length : 0;
 }
-function renderFileSuggestion(file, el, plugin) {
+function renderFileSuggestion(file, el, plugin, sourceFile) {
   el.empty();
   el.addClass("mod-complex");
   const contentEl = el.createDiv({ cls: "suggestion-content" });
@@ -473,7 +475,17 @@ function renderFileSuggestion(file, el, plugin) {
     cls: "suggestion-title",
     text: file.basename
   });
-  if (plugin.settings.recentFilePaths.includes(file.path)) {
+  if (sourceFile && file.basename === sourceFile.basename) {
+    titleRowEl.createSpan({
+      cls: "suggestion-flair",
+      text: "\u540C\u540D"
+    });
+  } else if (sourceFile && sourceFile.basename.length >= 2 && file.basename.length >= 2 && (file.basename.toLowerCase().includes(sourceFile.basename.toLowerCase()) || sourceFile.basename.toLowerCase().includes(file.basename.toLowerCase()))) {
+    titleRowEl.createSpan({
+      cls: "suggestion-flair",
+      text: "\u76F8\u4F3C"
+    });
+  } else if (plugin.settings.recentFilePaths.includes(file.path)) {
     titleRowEl.createSpan({
       cls: "suggestion-flair",
       text: "\u6700\u8FD1"
@@ -577,9 +589,29 @@ function readAliasesFromMetadata(file, app) {
   }
   return [];
 }
-function sortCandidateFiles(files, recentFilePaths) {
+function sortCandidateFiles(files, recentFilePaths, sourceFile) {
   const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
   return [...files].sort((a, b) => {
+    if (sourceFile) {
+      const aSame = a.basename === sourceFile.basename;
+      const bSame = b.basename === sourceFile.basename;
+      if (aSame && !bSame) return -1;
+      if (!aSame && bSame) return 1;
+      const isSimilar = (name1, name2) => {
+        if (name1.length < 2 || name2.length < 2) return false;
+        const n1 = name1.toLowerCase();
+        const n2 = name2.toLowerCase();
+        return n1.includes(n2) || n2.includes(n1);
+      };
+      const aSimilar = isSimilar(a.basename, sourceFile.basename);
+      const bSimilar = isSimilar(b.basename, sourceFile.basename);
+      if (aSimilar && !bSimilar) return -1;
+      if (!aSimilar && bSimilar) return 1;
+      if (aSimilar && bSimilar) {
+        const diff = Math.abs(a.basename.length - sourceFile.basename.length) - Math.abs(b.basename.length - sourceFile.basename.length);
+        if (diff !== 0) return diff > 0 ? 1 : -1;
+      }
+    }
     const modifiedTimeDiff = b.stat.mtime - a.stat.mtime;
     if (modifiedTimeDiff !== 0) {
       return modifiedTimeDiff;

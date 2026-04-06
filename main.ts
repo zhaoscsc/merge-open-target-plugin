@@ -268,6 +268,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
     return sortCandidateFiles(
       this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
       this.plugin.settings.recentFilePaths,
+      this.sourceFile,
     );
   }
 
@@ -286,7 +287,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el, this.plugin);
+    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -331,6 +332,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
     return sortCandidateFiles(
       this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
       this.plugin.settings.recentFilePaths,
+      this.sourceFile,
     );
   }
 
@@ -349,7 +351,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el, this.plugin);
+    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -623,6 +625,7 @@ function renderFileSuggestion(
   file: TFile,
   el: HTMLElement,
   plugin: MergeOpenTargetPlugin,
+  sourceFile?: TFile,
 ): void {
   el.empty();
   el.addClass("mod-complex");
@@ -634,7 +637,23 @@ function renderFileSuggestion(
     text: file.basename,
   });
 
-  if (plugin.settings.recentFilePaths.includes(file.path)) {
+  if (sourceFile && file.basename === sourceFile.basename) {
+    titleRowEl.createSpan({
+      cls: "suggestion-flair",
+      text: "同名",
+    });
+  } else if (
+    sourceFile &&
+    sourceFile.basename.length >= 2 &&
+    file.basename.length >= 2 &&
+    (file.basename.toLowerCase().includes(sourceFile.basename.toLowerCase()) ||
+      sourceFile.basename.toLowerCase().includes(file.basename.toLowerCase()))
+  ) {
+    titleRowEl.createSpan({
+      cls: "suggestion-flair",
+      text: "相似",
+    });
+  } else if (plugin.settings.recentFilePaths.includes(file.path)) {
     titleRowEl.createSpan({
       cls: "suggestion-flair",
       text: "最近",
@@ -771,10 +790,40 @@ function readAliasesFromMetadata(file: TFile, app?: App): string[] {
   return [];
 }
 
-function sortCandidateFiles(files: TFile[], recentFilePaths: string[]): TFile[] {
+function sortCandidateFiles(
+  files: TFile[],
+  recentFilePaths: string[],
+  sourceFile?: TFile,
+): TFile[] {
   const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
 
   return [...files].sort((a, b) => {
+    if (sourceFile) {
+      const aSame = a.basename === sourceFile.basename;
+      const bSame = b.basename === sourceFile.basename;
+      if (aSame && !bSame) return -1;
+      if (!aSame && bSame) return 1;
+
+      const isSimilar = (name1: string, name2: string) => {
+        if (name1.length < 2 || name2.length < 2) return false;
+        const n1 = name1.toLowerCase();
+        const n2 = name2.toLowerCase();
+        return n1.includes(n2) || n2.includes(n1);
+      };
+
+      const aSimilar = isSimilar(a.basename, sourceFile.basename);
+      const bSimilar = isSimilar(b.basename, sourceFile.basename);
+      if (aSimilar && !bSimilar) return -1;
+      if (!aSimilar && bSimilar) return 1;
+
+      if (aSimilar && bSimilar) {
+        const diff =
+          Math.abs(a.basename.length - sourceFile.basename.length) -
+          Math.abs(b.basename.length - sourceFile.basename.length);
+        if (diff !== 0) return diff > 0 ? 1 : -1;
+      }
+    }
+
     const modifiedTimeDiff = b.stat.mtime - a.stat.mtime;
     if (modifiedTimeDiff !== 0) {
       return modifiedTimeDiff;
