@@ -250,12 +250,19 @@ export default class MergeOpenTargetPlugin extends Plugin {
 }
 
 class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
+  private readonly cachedItems: TFile[];
+
   constructor(
     app: App,
     private readonly sourceFile: TFile,
     private readonly plugin: MergeOpenTargetPlugin,
   ) {
     super(app);
+    this.cachedItems = sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths,
+      this.sourceFile,
+    );
     this.setPlaceholder("选择要合并进入的目标笔记...");
     this.setInstructions([
       { command: "↑↓", purpose: "选择" },
@@ -265,11 +272,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   getItems(): TFile[] {
-    return sortCandidateFiles(
-      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
-      this.plugin.settings.recentFilePaths,
-      this.sourceFile,
-    );
+    return this.cachedItems;
   }
 
   getSuggestions(query: string): FuzzyMatch<TFile>[] {
@@ -311,6 +314,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
 
 class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   private readonly selectedText: string;
+  private readonly cachedItems: TFile[];
 
   constructor(
     app: App,
@@ -320,6 +324,11 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   ) {
     super(app);
     this.selectedText = editor.getSelection();
+    this.cachedItems = sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths,
+      this.sourceFile,
+    );
     this.setPlaceholder("选择要接收选中内容的目标笔记...");
     this.setInstructions([
       { command: "↑↓", purpose: "选择" },
@@ -329,11 +338,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   getItems(): TFile[] {
-    return sortCandidateFiles(
-      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
-      this.plugin.settings.recentFilePaths,
-      this.sourceFile,
-    );
+    return this.cachedItems;
   }
 
   getSuggestions(query: string): FuzzyMatch<TFile>[] {

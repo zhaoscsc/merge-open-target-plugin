@@ -203,6 +203,11 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
     super(app);
     this.sourceFile = sourceFile;
     this.plugin = plugin;
+    this.cachedItems = sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths,
+      this.sourceFile
+    );
     this.setPlaceholder("\u9009\u62E9\u8981\u5408\u5E76\u8FDB\u5165\u7684\u76EE\u6807\u7B14\u8BB0...");
     this.setInstructions([
       { command: "\u2191\u2193", purpose: "\u9009\u62E9" },
@@ -210,12 +215,9 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
       { command: "Esc", purpose: "\u53D6\u6D88" }
     ]);
   }
+  cachedItems;
   getItems() {
-    return sortCandidateFiles(
-      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
-      this.plugin.settings.recentFilePaths,
-      this.sourceFile
-    );
+    return this.cachedItems;
   }
   getSuggestions(query) {
     return getFileSuggestions(
@@ -256,6 +258,11 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
     this.editor = editor;
     this.plugin = plugin;
     this.selectedText = editor.getSelection();
+    this.cachedItems = sortCandidateFiles(
+      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
+      this.plugin.settings.recentFilePaths,
+      this.sourceFile
+    );
     this.setPlaceholder("\u9009\u62E9\u8981\u63A5\u6536\u9009\u4E2D\u5185\u5BB9\u7684\u76EE\u6807\u7B14\u8BB0...");
     this.setInstructions([
       { command: "\u2191\u2193", purpose: "\u9009\u62E9" },
@@ -264,12 +271,9 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
     ]);
   }
   selectedText;
+  cachedItems;
   getItems() {
-    return sortCandidateFiles(
-      this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.sourceFile.path),
-      this.plugin.settings.recentFilePaths,
-      this.sourceFile
-    );
+    return this.cachedItems;
   }
   getSuggestions(query) {
     return getFileSuggestions(
@@ -334,9 +338,7 @@ var MergeOpenTargetSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("\u6574\u7BC7\u5408\u5E76\u540E\u540C\u6B65\u66F4\u65B0\u6307\u5411\u6E90\u7B14\u8BB0\u7684\u94FE\u63A5").setDesc(
-      "\u4EC5\u5BF9\u201C\u6574\u7BC7\u5408\u5E76\u201D\u751F\u6548\u3002\u5F00\u542F\u540E\uFF0C\u4F1A\u628A\u6240\u6709\u5DF2\u89E3\u6790\u5230\u6E90\u7B14\u8BB0\u7684\u53CC\u94FE\u4E0E embed \u94FE\u63A5\u6539\u5199\u4E3A\u6307\u5411\u76EE\u6807\u7B14\u8BB0\u3002"
-    ).addToggle(
+    new import_obsidian.Setting(containerEl).setName("\u6574\u7BC7\u5408\u5E76\u540E\u540C\u6B65\u66F4\u65B0\u6307\u5411\u6E90\u7B14\u8BB0\u7684\u94FE\u63A5").setDesc("\u4EC5\u5BF9\u201C\u6574\u7BC7\u5408\u5E76\u201D\u751F\u6548\u3002\u5F00\u542F\u540E\uFF0C\u4F1A\u628A\u6240\u6709\u5DF2\u89E3\u6790\u5230\u6E90\u7B14\u8BB0\u7684\u53CC\u94FE\u4E0E embed \u94FE\u63A5\u6539\u5199\u4E3A\u6307\u5411\u76EE\u6807\u7B14\u8BB0\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.updateLinksAfterMerge).onChange(async (value) => {
         this.plugin.settings.updateLinksAfterMerge = value;
         await this.plugin.saveSettings();
@@ -361,7 +363,9 @@ function joinContent(first, second, separator) {
 }
 function getMarkdownReferrersToFile(app, targetPath) {
   const resolvedLinks = app.metadataCache.resolvedLinks ?? {};
-  return Object.entries(resolvedLinks).filter(([, links]) => (links?.[targetPath] ?? 0) > 0).map(([sourcePath]) => app.vault.getAbstractFileByPath(sourcePath)).filter((file) => file instanceof import_obsidian.TFile && file.extension === "md");
+  return Object.entries(resolvedLinks).filter(([, links]) => (links?.[targetPath] ?? 0) > 0).map(([sourcePath]) => app.vault.getAbstractFileByPath(sourcePath)).filter(
+    (file) => file instanceof import_obsidian.TFile && file.extension === "md"
+  );
 }
 async function rewriteLinksInFiles(app, files, sourceFile, targetFile) {
   for (const file of files) {
@@ -430,24 +434,15 @@ function collectLinkReplacements(app, references, isEmbed, referrerPath, sourceF
       return [];
     }
     const currentText = content.slice(startOffset, endOffset);
-    const nextText = buildReplacementReference(
-      app,
-      targetFile,
-      referrerPath,
-      parsed.subpath,
-      reference.displayText,
-      isEmbed
-    );
+    const nextText = buildReplacementReference(app, targetFile, referrerPath, parsed.subpath, reference.displayText, isEmbed);
     if (!currentText || currentText === nextText) {
       return [];
     }
-    return [
-      {
-        start: startOffset,
-        end: endOffset,
-        text: nextText
-      }
-    ];
+    return [{
+      start: startOffset,
+      end: endOffset,
+      text: nextText
+    }];
   });
 }
 function buildReplacementReference(app, targetFile, referrerPath, subpath, displayText, isEmbed) {
@@ -597,19 +592,22 @@ function sortCandidateFiles(files, recentFilePaths, sourceFile) {
       const bSame = b.basename === sourceFile.basename;
       if (aSame && !bSame) return -1;
       if (!aSame && bSame) return 1;
+
       const isSimilar = (name1, name2) => {
         if (name1.length < 2 || name2.length < 2) return false;
         const n1 = name1.toLowerCase();
         const n2 = name2.toLowerCase();
         return n1.includes(n2) || n2.includes(n1);
       };
+
       const aSimilar = isSimilar(a.basename, sourceFile.basename);
       const bSimilar = isSimilar(b.basename, sourceFile.basename);
       if (aSimilar && !bSimilar) return -1;
       if (!aSimilar && bSimilar) return 1;
+      
       if (aSimilar && bSimilar) {
-        const diff = Math.abs(a.basename.length - sourceFile.basename.length) - Math.abs(b.basename.length - sourceFile.basename.length);
-        if (diff !== 0) return diff > 0 ? 1 : -1;
+          const diff = Math.abs(a.basename.length - sourceFile.basename.length) - Math.abs(b.basename.length - sourceFile.basename.length);
+          if (diff !== 0) return diff > 0 ? 1 : -1;
       }
     }
     const modifiedTimeDiff = b.stat.mtime - a.stat.mtime;
