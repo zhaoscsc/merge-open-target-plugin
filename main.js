@@ -202,10 +202,10 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
   }
   async queryJevRecommend(sourceSnippet, candidateFiles) {
     if (!this.settings.enableJevRecommend || !this.settings.typesafeApiKey?.trim()) {
-      return null;
+      return [];
     }
     if (!candidateFiles || candidateFiles.length === 0) {
-      return null;
+      return [];
     }
     try {
       const topCandidates = candidateFiles.slice(0, 30);
@@ -241,26 +241,43 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
       });
       if (response.status < 200 || response.status >= 300) {
         console.warn("TypeSafe Jev API returned error status:", response.status, response.text);
-        return null;
+        return [];
       }
       const data = response.json || {};
       const decision = data.answers?.["recommended_target_note"] || data.results?.["recommended_target_note"] || data.questions?.["recommended_target_note"] || data.recommended_target_note;
-      const choice = decision?.choice || decision?.selected || decision?.value;
-      const confidence = typeof decision?.confidence === "number" ? decision.confidence : decision?.probability ?? 1;
       const minConfidence = this.settings.jevMinConfidence ?? 0.6;
-      if (choice && choice in keyToFileMap && confidence >= minConfidence) {
-        const matchedFile = keyToFileMap[choice];
-        if (matchedFile) {
-          return {
-            file: matchedFile,
-            confidence
-          };
+      const items = [];
+      const seenPaths = /* @__PURE__ */ new Set();
+      if (decision?.probabilities && typeof decision.probabilities === "object") {
+        const sortedProbabilities = Object.entries(decision.probabilities).map(([key, prob]) => ({
+          key,
+          prob: typeof prob === "number" ? prob : 0
+        })).filter((entry) => entry.prob >= minConfidence && entry.key in keyToFileMap).sort((a, b) => b.prob - a.prob);
+        for (const entry of sortedProbabilities) {
+          const file = keyToFileMap[entry.key];
+          if (file && !seenPaths.has(file.path)) {
+            seenPaths.add(file.path);
+            items.push({ file, confidence: entry.prob });
+          }
+          if (items.length >= 3) break;
         }
       }
-      return null;
+      const primaryChoice = decision?.choice || decision?.selected || decision?.value;
+      const primaryConfidence = typeof decision?.confidence === "number" ? decision.confidence : decision?.probability ?? 1;
+      if (primaryChoice && primaryChoice in keyToFileMap && primaryConfidence >= minConfidence) {
+        const matchedFile = keyToFileMap[primaryChoice];
+        if (matchedFile && !seenPaths.has(matchedFile.path)) {
+          if (items.length === 0) {
+            items.push({ file: matchedFile, confidence: primaryConfidence });
+          } else if (items.length < 3) {
+            items.unshift({ file: matchedFile, confidence: primaryConfidence });
+          }
+        }
+      }
+      return items;
     } catch (err) {
       console.warn("TypeSafe Jev recommendation request failed silently:", err);
-      return null;
+      return [];
     }
   }
 };
@@ -312,7 +329,7 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
     ]);
   }
   cachedItems;
-  aiRecommendation = null;
+  aiRecommendations = [];
   onOpen() {
     void super.onOpen();
     if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
@@ -339,11 +356,12 @@ ${cleanContent.slice(0, 600)}`;
         }
         if (combinedCandidates.length >= 30) break;
       }
-      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
-      if (result?.file) {
-        this.aiRecommendation = result;
-        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
-        this.cachedItems = [result.file, ...remaining];
+      const results = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (results && results.length > 0) {
+        this.aiRecommendations = results;
+        const aiPaths = new Set(results.map((r) => r.file.path));
+        const remaining = this.cachedItems.filter((f) => !aiPaths.has(f.path));
+        this.cachedItems = [...results.map((r) => r.file), ...remaining];
         if (this.inputEl) {
           this.inputEl.dispatchEvent(new Event("input"));
         }
@@ -362,7 +380,7 @@ ${cleanContent.slice(0, 600)}`;
       this.plugin.app,
       this.plugin.aliasCache,
       this.plugin.settings.recentFilePaths,
-      this.aiRecommendation?.file
+      this.aiRecommendations
     );
   }
   getItemText(file) {
@@ -370,7 +388,7 @@ ${cleanContent.slice(0, 600)}`;
   }
   renderSuggestion(match, el) {
     const targetFile = match.item;
-    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendations);
   }
   onChooseItem(targetFile) {
     void this.handleChooseItem(targetFile);
@@ -418,7 +436,7 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
   }
   selectedText;
   cachedItems;
-  aiRecommendation = null;
+  aiRecommendations = [];
   onOpen() {
     void super.onOpen();
     if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
@@ -443,11 +461,12 @@ ${this.selectedText.trim().slice(0, 600)}`;
         }
         if (combinedCandidates.length >= 30) break;
       }
-      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
-      if (result?.file) {
-        this.aiRecommendation = result;
-        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
-        this.cachedItems = [result.file, ...remaining];
+      const results = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (results && results.length > 0) {
+        this.aiRecommendations = results;
+        const aiPaths = new Set(results.map((r) => r.file.path));
+        const remaining = this.cachedItems.filter((f) => !aiPaths.has(f.path));
+        this.cachedItems = [...results.map((r) => r.file), ...remaining];
         if (this.inputEl) {
           this.inputEl.dispatchEvent(new Event("input"));
         }
@@ -466,7 +485,7 @@ ${this.selectedText.trim().slice(0, 600)}`;
       this.plugin.app,
       this.plugin.aliasCache,
       this.plugin.settings.recentFilePaths,
-      this.aiRecommendation?.file
+      this.aiRecommendations
     );
   }
   getItemText(file) {
@@ -474,7 +493,7 @@ ${this.selectedText.trim().slice(0, 600)}`;
   }
   renderSuggestion(match, el) {
     const targetFile = match.item;
-    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendations);
   }
   onChooseItem(targetFile) {
     void this.handleChooseItem(targetFile);
@@ -731,7 +750,7 @@ function getFrontmatterEndOffset(content) {
   const match = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/);
   return match ? match[0].length : 0;
 }
-function renderFileSuggestion(file, el, plugin, sourceFile, aiRecommendation) {
+function renderFileSuggestion(file, el, plugin, sourceFile, aiRecommendations) {
   try {
     if (!file || !el) return;
     el.empty();
@@ -742,10 +761,11 @@ function renderFileSuggestion(file, el, plugin, sourceFile, aiRecommendation) {
       cls: "suggestion-title",
       text: file.basename || file.name || "Untitled"
     });
-    const isAi = aiRecommendation && (aiRecommendation.file && file.path === aiRecommendation.file.path || file.path === aiRecommendation.path);
+    const aiRec = Array.isArray(aiRecommendations) ? aiRecommendations.find((item) => item?.file?.path === file.path) : null;
+    const isAi = !!aiRec;
     const recentList = Array.isArray(plugin?.settings?.recentFilePaths) ? plugin.settings.recentFilePaths : [];
-    if (isAi) {
-      const confVal = typeof aiRecommendation.confidence === "number" ? aiRecommendation.confidence : 1;
+    if (isAi && aiRec) {
+      const confVal = typeof aiRec.confidence === "number" ? aiRec.confidence : 1;
       const pct = Math.round(confVal <= 1 ? confVal * 100 : confVal);
       titleRowEl.createSpan({
         cls: "suggestion-flair mod-ai",
@@ -788,10 +808,18 @@ function getFileSearchText(plugin, file) {
   const aliases = getAliases(file, plugin.app, plugin.aliasCache);
   return [...aliases, file.basename, file.path].join(" ");
 }
-function getFileSuggestions(files, query, app, aliasCache, recentFilePaths, aiRecommendedFile) {
+function getFileSuggestions(files, query, app, aliasCache, recentFilePaths, aiRecommendations) {
   const normalizedQuery = (query || "").trim().toLocaleLowerCase();
   const safeRecent = Array.isArray(recentFilePaths) ? recentFilePaths : [];
   const recentRank = new Map(safeRecent.map((path, index) => [path, index]));
+  const aiRankMap = /* @__PURE__ */ new Map();
+  if (Array.isArray(aiRecommendations)) {
+    aiRecommendations.forEach((item, index) => {
+      if (item?.file?.path) {
+        aiRankMap.set(item.file.path, index);
+      }
+    });
+  }
   if (!normalizedQuery) {
     return files.slice(0, 100).map((file) => ({
       item: file,
@@ -810,7 +838,8 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths, aiRe
     if (!match) {
       return null;
     }
-    const isAi = !!(aiRecommendedFile && file.path === aiRecommendedFile.path);
+    const aiRank = aiRankMap.has(file.path) ? aiRankMap.get(file.path) ?? Number.POSITIVE_INFINITY : Number.POSITIVE_INFINITY;
+    const isAi = aiRank !== Number.POSITIVE_INFINITY;
     const baseName = (file.basename || "").toLocaleLowerCase();
     const aliasExact = aliases.some((alias) => (alias || "").toLocaleLowerCase() === normalizedQuery);
     const aliasPrefix = aliases.some(
@@ -823,6 +852,7 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths, aiRe
       item: file,
       match,
       isAi,
+      aiRank,
       aliasExact,
       aliasPrefix,
       titleExact,
@@ -830,8 +860,8 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths, aiRe
       recent
     };
   }).filter((entry) => entry !== null).sort((a, b) => {
-    if (a.isAi !== b.isAi) {
-      return a.isAi ? -1 : 1;
+    if (a.aiRank !== b.aiRank) {
+      return a.aiRank - b.aiRank;
     }
     if (a.aliasExact !== b.aliasExact) {
       return a.aliasExact ? -1 : 1;

@@ -22,6 +22,12 @@ interface JevDecision {
   value?: string;
   confidence?: number;
   probability?: number;
+  probabilities?: Record<string, number>;
+}
+
+interface JevRecommendationItem {
+  file: TFile;
+  confidence: number;
 }
 
 interface JevResponse {
@@ -274,12 +280,12 @@ export default class MergeOpenTargetPlugin extends Plugin {
   async queryJevRecommend(
     sourceSnippet: string,
     candidateFiles: TFile[]
-  ): Promise<{ file: TFile; confidence: number } | null> {
+  ): Promise<JevRecommendationItem[]> {
     if (!this.settings.enableJevRecommend || !this.settings.typesafeApiKey?.trim()) {
-      return null;
+      return [];
     }
     if (!candidateFiles || candidateFiles.length === 0) {
-      return null;
+      return [];
     }
     try {
       const topCandidates = candidateFiles.slice(0, 30);
@@ -315,7 +321,7 @@ export default class MergeOpenTargetPlugin extends Plugin {
       });
       if (response.status < 200 || response.status >= 300) {
         console.warn("TypeSafe Jev API returned error status:", response.status, response.text);
-        return null;
+        return [];
       }
       const data = (response.json || {}) as JevResponse;
       const decision: JevDecision | undefined =
@@ -324,22 +330,47 @@ export default class MergeOpenTargetPlugin extends Plugin {
         data.questions?.["recommended_target_note"] ||
         data.recommended_target_note;
 
-      const choice = decision?.choice || decision?.selected || decision?.value;
-      const confidence = typeof decision?.confidence === "number" ? decision.confidence : (decision?.probability ?? 1);
       const minConfidence = this.settings.jevMinConfidence ?? 0.6;
-      if (choice && choice in keyToFileMap && confidence >= minConfidence) {
-        const matchedFile = keyToFileMap[choice];
-        if (matchedFile) {
-          return {
-            file: matchedFile,
-            confidence,
-          };
+      const items: JevRecommendationItem[] = [];
+      const seenPaths = new Set<string>();
+
+      if (decision?.probabilities && typeof decision.probabilities === "object") {
+        const sortedProbabilities = Object.entries(decision.probabilities)
+          .map(([key, prob]) => ({
+            key,
+            prob: typeof prob === "number" ? prob : 0,
+          }))
+          .filter((entry) => entry.prob >= minConfidence && entry.key in keyToFileMap)
+          .sort((a, b) => b.prob - a.prob);
+
+        for (const entry of sortedProbabilities) {
+          const file = keyToFileMap[entry.key];
+          if (file && !seenPaths.has(file.path)) {
+            seenPaths.add(file.path);
+            items.push({ file, confidence: entry.prob });
+          }
+          if (items.length >= 3) break;
         }
       }
-      return null;
+
+      // Fallback: If no items collected from probabilities, or primary choice wasn't included
+      const primaryChoice = decision?.choice || decision?.selected || decision?.value;
+      const primaryConfidence = typeof decision?.confidence === "number" ? decision.confidence : (decision?.probability ?? 1);
+      if (primaryChoice && primaryChoice in keyToFileMap && primaryConfidence >= minConfidence) {
+        const matchedFile = keyToFileMap[primaryChoice];
+        if (matchedFile && !seenPaths.has(matchedFile.path)) {
+          if (items.length === 0) {
+            items.push({ file: matchedFile, confidence: primaryConfidence });
+          } else if (items.length < 3) {
+            items.unshift({ file: matchedFile, confidence: primaryConfidence });
+          }
+        }
+      }
+
+      return items;
     } catch (err) {
       console.warn("TypeSafe Jev recommendation request failed silently:", err);
-      return null;
+      return [];
     }
   }
 }
@@ -383,7 +414,7 @@ class ConfirmModal extends Modal {
 
 class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
   private cachedItems: TFile[];
-  private aiRecommendation: { file: TFile; confidence: number } | null = null;
+  private aiRecommendations: JevRecommendationItem[] = [];
 
   constructor(
     app: App,
@@ -431,11 +462,12 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
         if (combinedCandidates.length >= 30) break;
       }
 
-      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
-      if (result?.file) {
-        this.aiRecommendation = result;
-        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
-        this.cachedItems = [result.file, ...remaining];
+      const results = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (results && results.length > 0) {
+        this.aiRecommendations = results;
+        const aiPaths = new Set(results.map((r) => r.file.path));
+        const remaining = this.cachedItems.filter((f) => !aiPaths.has(f.path));
+        this.cachedItems = [...results.map((r) => r.file), ...remaining];
         if (this.inputEl) {
           this.inputEl.dispatchEvent(new Event("input"));
         }
@@ -456,7 +488,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
       this.plugin.app,
       this.plugin.aliasCache,
       this.plugin.settings.recentFilePaths,
-      this.aiRecommendation?.file,
+      this.aiRecommendations,
     );
   }
 
@@ -466,7 +498,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
 
   renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
     const targetFile = match.item;
-    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendations);
   }
 
   onChooseItem(targetFile: TFile): void {
@@ -501,7 +533,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
 class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   private readonly selectedText: string;
   private cachedItems: TFile[];
-  private aiRecommendation: { file: TFile; confidence: number } | null = null;
+  private aiRecommendations: JevRecommendationItem[] = [];
 
   constructor(
     app: App,
@@ -549,11 +581,12 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
         if (combinedCandidates.length >= 30) break;
       }
 
-      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
-      if (result?.file) {
-        this.aiRecommendation = result;
-        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
-        this.cachedItems = [result.file, ...remaining];
+      const results = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (results && results.length > 0) {
+        this.aiRecommendations = results;
+        const aiPaths = new Set(results.map((r) => r.file.path));
+        const remaining = this.cachedItems.filter((f) => !aiPaths.has(f.path));
+        this.cachedItems = [...results.map((r) => r.file), ...remaining];
         if (this.inputEl) {
           this.inputEl.dispatchEvent(new Event("input"));
         }
@@ -574,7 +607,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
       this.plugin.app,
       this.plugin.aliasCache,
       this.plugin.settings.recentFilePaths,
-      this.aiRecommendation?.file,
+      this.aiRecommendations,
     );
   }
 
@@ -584,7 +617,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
 
   renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
     const targetFile = match.item;
-    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendations);
   }
 
   onChooseItem(targetFile: TFile): void {
@@ -956,7 +989,7 @@ function renderFileSuggestion(
   el: HTMLElement,
   plugin: MergeOpenTargetPlugin,
   sourceFile?: TFile,
-  aiRecommendation?: { file?: TFile; path?: string; confidence?: number } | null,
+  aiRecommendations?: JevRecommendationItem[] | null,
 ): void {
   try {
     if (!file || !el) return;
@@ -970,14 +1003,14 @@ function renderFileSuggestion(
       text: file.basename || file.name || "Untitled",
     });
 
-    const isAi = aiRecommendation && (
-      (aiRecommendation.file && file.path === aiRecommendation.file.path) ||
-      file.path === aiRecommendation.path
-    );
+    const aiRec = Array.isArray(aiRecommendations)
+      ? aiRecommendations.find((item) => item?.file?.path === file.path)
+      : null;
+    const isAi = !!aiRec;
     const recentList = Array.isArray(plugin?.settings?.recentFilePaths) ? plugin.settings.recentFilePaths : [];
 
-    if (isAi) {
-      const confVal = typeof aiRecommendation.confidence === "number" ? aiRecommendation.confidence : 1;
+    if (isAi && aiRec) {
+      const confVal = typeof aiRec.confidence === "number" ? aiRec.confidence : 1;
       const pct = Math.round(confVal <= 1 ? confVal * 100 : confVal);
       titleRowEl.createSpan({
         cls: "suggestion-flair mod-ai",
@@ -1038,11 +1071,20 @@ function getFileSuggestions(
   app: App,
   aliasCache: Map<string, string[]>,
   recentFilePaths: string[],
-  aiRecommendedFile?: TFile,
+  aiRecommendations?: JevRecommendationItem[],
 ): FuzzyMatch<TFile>[] {
   const normalizedQuery = (query || "").trim().toLocaleLowerCase();
   const safeRecent = Array.isArray(recentFilePaths) ? recentFilePaths : [];
   const recentRank = new Map(safeRecent.map((path, index) => [path, index]));
+
+  const aiRankMap = new Map<string, number>();
+  if (Array.isArray(aiRecommendations)) {
+    aiRecommendations.forEach((item, index) => {
+      if (item?.file?.path) {
+        aiRankMap.set(item.file.path, index);
+      }
+    });
+  }
 
   if (!normalizedQuery) {
     return files.slice(0, 100).map((file) => ({
@@ -1067,7 +1109,8 @@ function getFileSuggestions(
         return null;
       }
 
-      const isAi = !!(aiRecommendedFile && file.path === aiRecommendedFile.path);
+      const aiRank = aiRankMap.has(file.path) ? (aiRankMap.get(file.path) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      const isAi = aiRank !== Number.POSITIVE_INFINITY;
       const baseName = (file.basename || "").toLocaleLowerCase();
       const aliasExact = aliases.some((alias) => (alias || "").toLocaleLowerCase() === normalizedQuery);
       const aliasPrefix = aliases.some((alias) =>
@@ -1081,6 +1124,7 @@ function getFileSuggestions(
         item: file,
         match,
         isAi,
+        aiRank,
         aliasExact,
         aliasPrefix,
         titleExact,
@@ -1090,8 +1134,8 @@ function getFileSuggestions(
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
     .sort((a, b) => {
-      if (a.isAi !== b.isAi) {
-        return a.isAi ? -1 : 1;
+      if (a.aiRank !== b.aiRank) {
+        return a.aiRank - b.aiRank;
       }
 
       if (a.aliasExact !== b.aliasExact) {
