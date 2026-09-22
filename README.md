@@ -1,171 +1,139 @@
 # Merge And Open Target
 
-An Obsidian plugin for moving note content into another note and opening the target note immediately after the merge.
+> 专为 Obsidian 打造的高效笔记合并与流转工具：将整篇笔记或选区内容一键并入目标笔记，并在合并完成后**立即自动打开目标笔记**，让思考与写作保持连贯。
 
-一个 Obsidian 插件，用来把整篇笔记或当前选中的内容合并到另一篇笔记，并在完成后自动打开目标笔记。
+[English Brief](#english-brief) · [安装指引](#安装指引) · [配置说明](#配置说明) · [GitHub 仓库](https://github.com/zhaoscsc/merge-open-target-plugin)
 
-## Why This Plugin
+---
 
-Obsidian's built-in Note composer is great for merging notes, but some workflows still feel missing:
+## 为什么需要它？
 
-- After merging note A into note B, open note B automatically
-- Merge only the current selection into another note
-- Skip source frontmatter when merging a whole note
+Obsidian 自带的 Note Composer（笔记合并器）功能很实用，但在高频深度使用的卡片笔记、日记提炼与知识流转场景中，常常存在以下痛点：
 
-This plugin exists to make that workflow feel faster and more direct.
+1. **思维被中断**：合并 A 笔记到 B 笔记后，Obsidian 仍停留在原处（甚至变成空白），必须手动重新搜索并打开 B 笔记才能继续写作。
+2. **颗粒度受限**：只想把当前正在阅读或记录的一段话并入主题笔记，不想移动整篇内容。
+3. **元数据污染**：整篇合并时，源笔记的 YAML Frontmatter（创建时间、标签等）常被一并贴入目标笔记，破坏了目标笔记的属性结构。
+4. **全库检索繁琐**：在数万篇笔记的大库中，跨主题归纳时往往一时想不起确切的文件名，只能依赖模糊记忆反复搜索。
 
-## Features
+**Merge And Open Target** 就是为了解决上述所有断点而生。
 
-- Merge the current note into another note and open the target note
-- Merge selected text into another note and open the target note
-- Strip source frontmatter when merging a whole note
-- Append to the target note or prepend to the beginning
-- Optionally move the source note to trash after a whole-note merge
-- Ask for confirmation before merging
+---
 
-## Commands
+## 核心功能全景
 
-- `Merge current file into another note and open target`
-- `Merge selected text into another note and open target`
+### 1. 自动直达目标笔记
+无论合并整篇笔记还是合并选中文字，合并动作完成后，焦点无缝切换至目标笔记，光标定位到最新合并的内容位置，思维不掉线。
 
-## Current Behavior
+### 2. 双模式智能合并
+- **整篇合并（Whole Note Merge）**：
+    - 自动剥离源笔记的 YAML Frontmatter，仅保留纯正文并入目标文件。
+    - 支持配置合并后自动将源文件移入废纸篓（遵循 Obsidian 或系统回收站设置）。
+    - 支持智能重定向双链：可选自动将全库中指向源笔记的双链与嵌入链接更新为指向目标笔记。
+- **选区合并（Selection Merge）**：
+    - 选中文本执行合并，内容自动剪切移动至目标笔记，原笔记选区内容被移除。
 
-### Whole-note merge
+### 3. 多维度智能候选排序
+唤起模态框时，无需键盘输入即可在第一屏看到最可能的候选目标：
+- 🏷️ **`同名` 优先**：如果目标笔记与源笔记存在同名，置顶推荐。
+- 🏷️ **`相似` 优先**：基于名称包含关系的相似笔记智能置顶。
+- 🏷️ **`最近` 优先**：最近打开或编辑过的笔记优先排在前面，便于当前工作流的就近归纳。
+- 🔍 **别名（Aliases）全检索**：支持按 YAML 中的 `aliases` 别名快速搜索候选。
 
-- Merges the source note body into the target note
-- Does not merge the source note's frontmatter into the target
-- Can optionally move the source note to trash after merge
-- Opens the target note after merge
+### 4. TypeSafe AI (Jev) 智能语义推荐（可选）
+内置新一代 TypeSafe AI 的 Jev (System One) 快速直觉模型：
+- **语义级归纳**：即使标题字面上毫无关联（例如源笔记是《纳瓦尔访谈》，目标笔记是《商业杠杆与自由》），AI 亦能精准推断归属。
+- **零阻塞极速体验**：模态框 0ms 本地秒开，后台异步请求 Jev 进行决策，完全不影响手动输入搜索。
+- **BM25 本地初筛**：从当前内容中实时提取核心关键词，通过 BM25 算法在全库所有笔记标题与别名中初筛候选，确保大库（30,000+ 篇）下也能精准命中冷门深层笔记。
+- **置信度百分比徽章**：决策成功后自动在候选首项展示 `AI推荐 95%` 徽章；低于置信度阈值时不打扰。
 
-### Selected-text merge
+### 5. 原生安全保护
+- **原生确认弹窗**：可选开启“合并前二次确认”，采用 Obsidian 原生 Modal 架构，跨端与移动端一致体验，防止误触。
+- **合并位置灵活配置**：支持追加到末尾（Append）或插入到开头（Prepend）。
+- **自定义分隔符**：可自定义两篇笔记合并时的拼接间隙（默认双换行）。
 
-- Merges only the selected text into the target note
-- Removes the selected text from the source note
-- Opens the target note after merge
+---
 
-## What's New in v0.2.3
+## 快速上手与命令
 
-- **Support Declarative Settings API**: Implement `getSettingDefinitions()` for Obsidian 1.13.0+ settings search indexing while retaining backward-compatible `display()` UI.
+### 核心命令
+打开 Obsidian 命令面板（`Ctrl/Cmd + P`），搜索并执行：
+- `Merge And Open Target: Merge current file into another note and open target`
+  合并当前整篇笔记并打开目标笔记。
+- `Merge And Open Target: Merge selected text into another note and open target`
+  将选中的文本合并到目标笔记并打开。
 
-## What's New in v0.2.2
+> 💡 **建议**：在 `设置 -> 快捷键` 中为上述两项命令分别绑定快捷键（例如 `Alt + M` 与 `Alt + Shift + M`），体验飞一般的归纳流。
 
-- **Pass Obsidian Developer Portal Review**:
-  - Bump `minAppVersion` to `1.6.6` ensuring full API compatibility with `FileManager.trashFile`.
-  - Fix all TypeScript type safety issues, eliminating unsafe assignments, member accesses, and unhandled floating promises.
-  - Implement native Obsidian `ConfirmModal` replacing native `window.confirm` for desktop and mobile UX consistency.
-  - Fix regex character-class escapes and strict `FuzzyMatch<TFile>` suggestion types.
+---
 
-## What's New in v0.2.1
+## 配置说明
 
-- **Fix Obsidian Review Automated Checks**: Bump `minAppVersion` to `1.5.8` matching `SuggestModal` API specs, migrate settings heading to `Setting.setHeading()`, and move inline badge styling to modular `styles.css`.
-- **AI Target Recommendation**: Optional semantic recommendation powered by TypeSafe AI (Jev / System One), predicting the best target note asynchronously in the background.
-- **Confidence Score Display**: Displays real-time confidence percentage badge (`AI推荐 xx%`) for recommended target notes.
-- **BM25 Vault Pre-filtering**: High-speed BM25 token analysis across tens of thousands of notes to ensure high-relevance candidates.
-- **Defensive Suggestion Rendering**: Slices empty-query candidate list to top 100 notes with robust exception boundaries, ensuring silky-smooth performance in large vaults (30,000+ notes).
+在 Obsidian 设置界面的 **Merge And Open Target** 选项卡中，可按需定制以下行为：
 
-## Privacy Notice
+| 设置项 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| **合并位置** | 追加到末尾 | 可选 `追加到末尾` 或 `插入到开头`。 |
+| **分隔符** | `\n\n` | 合并两段内容之间插入的间隔符号，支持 `\n`、`\t` 等转义字符。 |
+| **合并后移入废纸篓** | 开启 | 整篇合并后自动把源笔记移入废纸篓。 |
+| **整篇合并后同步更新双链** | 开启 | 自动重定向全库指向源笔记的 `[[...]]` 与 `![[...]]` 链接。 |
+| **合并前确认** | 关闭 | 开启后每次执行合并均会弹出确认弹窗。 |
+| **启用 Jev 语义推荐** | 关闭 | 是否启用 TypeSafe AI 智能语义目标推荐。 |
+| **TypeSafe API Key** | 空 | 前往 [TypeSafe Console](https://console.typesafe.ai/) 获取的 API 密钥。 |
+| **最低置信度阈值** | `0.6` | 只有当 AI 决策置信度高于该值时才进行自动置顶推荐。 |
 
-- **Completely Opt-in**: The TypeSafe AI recommendation feature is **disabled by default**. The plugin runs entirely offline unless you explicitly enable this feature in settings.
-- **External Data Transmission**: When (and only when) AI recommendation is enabled and a valid TypeSafe API key is provided, the plugin sends an HTTP POST request to `https://api.typesafe.ai/v1/systemone`. The payload contains only the note title and a 600-character snippet of the note content (or selected text) along with up to 30 candidate note titles/paths to ask the model for the best matching destination note.
-- **No Data Retention**: No other vault data is ever sent, collected, or retained.
+---
 
-## What's New in v0.1.9
+## 隐私与网络安全说明
 
-- Pre-fetch and cache candidate file lists when the modal opens to avoid UI latency in large vaults.
+本插件严格遵守 Obsidian 社区插件安全准则：
 
-## What's New in v0.1.8
+- **完全离线优先**：AI 语义推荐功能默认**处于关闭状态**。在未开启该功能时，插件 100% 本地离线运行，不产生任何网络请求。
+- **数据传输极小化**：仅在用户**主动开启 Jev 推荐**且**配置了有效 API Key** 时，插件才会向 `https://api.typesafe.ai/v1/systemone` 发起单次安全 HTTPS 请求。
+- **请求内容透明**：发送的数据仅包含当前笔记标题、正文前 600 字符摘要，以及本地 BM25 算法初筛出的最多 30 个候选笔记标题与路径。
+- **无数据留存**：该接口专用于瞬时分类推断，插件不会将任何库内数据用于持久化存储或模型训练。
 
-- Support case-insensitive title similarity matching and enhanced prefix prioritizing.
+---
 
-## Previous Update in v0.1.5
+## 安装指引
 
-- Show default target suggestions by recently modified notes when the picker first opens
-- Keep typed search results sorted by search relevance instead of recency
+### 方式一：Obsidian 官方社区市场安装（推荐）
+1. 打开 Obsidian `设置 -> 社区插件 -> 浏览`。
+2. 搜索 `Merge And Open Target`。
+3. 点击 `安装` 并启用。
 
-## Previous Update in v0.1.4
+### 方式二：使用 BRAT 插件安装测试版
+1. 确保已安装 [BRAT 插件](https://github.com/TfTHacker/obsidian42-brat)。
+2. 在 BRAT 设置中点击 `Add Beta plugin`。
+3. 填入仓库地址：
+   ```text
+   https://github.com/zhaoscsc/merge-open-target-plugin
+   ```
+4. 点击确认安装，安装完成后在社区插件列表中启用。
 
-- Improve target-note search performance in large vaults
-- Remove the full-vault alias pre-scan before opening the picker
-- Read aliases from Obsidian metadata cache instead
+### 方式三：手动安装
+1. 从 [Releases 页面](https://github.com/zhaoscsc/merge-open-target-plugin/releases/latest) 下载最新发布的三个核心文件：
+    - `main.js`
+    - `manifest.json`
+    - `styles.css`
+2. 进入你的 Obsidian 库目录：`.obsidian/plugins/`，新建名为 `merge-open-target` 的文件夹。
+3. 将下载的文件放入该文件夹中，在 Obsidian 插件面板中点击重新加载并启用。
 
-## Previous Update in v0.1.3
+---
 
-- Search target notes by `aliases` in addition to the note title
-- Example: searching `XAI` can now find a note titled `grok` if `XAI` is listed in frontmatter aliases
-- Keep recent-note prioritization and the `最近` badge in the suggestion list
+## English Brief
 
-## Previous Update in v0.1.2
+**Merge And Open Target** is an Obsidian plugin designed to merge the current note or selected text into a destination note and immediately open the target note.
 
-- Show a subtle `最近` badge for recently opened note suggestions
-- Makes duplicate note titles easier to distinguish at a glance
+### Key Highlights
+- **Immediate Navigation**: Opens and focuses on the destination note immediately after merge.
+- **Two Merge Modes**: Whole-note merge (auto-strips source YAML frontmatter) & selection-only merge.
+- **Backlink Updating**: Optionally redirects all wikilinks and embeds pointing to the source note to the target.
+- **Multi-criteria Sorting**: Instant prioritization by exact title match (`同名`), containment similarity (`相似`), and recent activity (`最近`).
+- **Optional TypeSafe AI (Jev)**: Asynchronous background semantic destination prediction with confidence badges.
+- **Strict Privacy**: Fully offline by default. External requests to `https://api.typesafe.ai/v1/systemone` occur only when explicitly enabled by the user with a valid API key.
 
-## Previous Update in v0.1.1
+---
 
-- Search target notes by note title instead of full path
-- Still show full path in the suggestion list for disambiguation
-- When duplicate note titles exist, prioritize the note you opened most recently
+## 开源协议
 
-## Settings
-
-- Merge position: append to end or prepend to beginning
-- Separator: custom text inserted between merged contents
-- Trash source after whole-note merge
-- Confirm before merge
-
-## Install
-
-### Install with BRAT
-
-1. Install the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin in Obsidian.
-2. Open the BRAT plugin settings.
-3. Choose `Add Beta plugin`.
-4. Paste this repository URL:
-
-```text
-https://github.com/zhaoscsc/merge-open-target-plugin
-```
-
-5. Confirm and let BRAT install the plugin.
-6. Enable `Merge And Open Target` in Community plugins if it is not enabled automatically.
-
-### Manual install
-
-Download the latest release files and copy them into your vault at `.obsidian/plugins/merge-open-target/`:
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
-
-Then reload community plugins in Obsidian and enable `Merge And Open Target`.
-
-## Development
-
-```bash
-npm install
-npm run build
-```
-
-## Notes
-
-- This plugin currently works as an alternative command workflow rather than patching Obsidian's core Note composer command directly.
-- When merging selected text, the current behavior is move, not copy.
-
-## 中文说明
-
-这个插件适合下面两类场景：
-
-- 你把 A 合并到 B 以后，希望自动打开 B
-- 你只想把当前选中的一段内容并到别的笔记，而不是整篇移动
-
-当前版本特点：
-
-- 整篇合并时，不会把源笔记的 frontmatter 合并过去
-- 选区合并时，会把选中内容移动到目标笔记，并从原笔记删除
-- 支持合并到目标笔记开头或末尾
-- 支持合并前确认
-- 搜索目标笔记时，支持按笔记名和 `aliases` 查找
-- 同名笔记会优先显示最近打开过的那篇，并带 `最近` 标签
-
-## License
-
-MIT
+本项目基于 [MIT 协议](LICENSE) 开源。
