@@ -43,8 +43,9 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
-## What's New in v0.2.0
+## What's New in v0.2.1
 
+- **Fix Obsidian Review Automated Checks**: Bump `minAppVersion` to `1.5.8` matching `SuggestModal` API specs, migrate settings heading to `Setting.setHeading()`, and move inline badge styling to modular `styles.css`.
 - **AI Target Recommendation**: Optional semantic recommendation powered by TypeSafe AI (Jev / System One), predicting the best target note asynchronously in the background.
 - **Confidence Score Display**: Displays real-time confidence percentage badge (`AI推荐 xx%`) for recommended target notes.
 - **BM25 Vault Pre-filtering**: High-speed BM25 token analysis across tens of thousands of notes to ensure high-relevance candidates.
@@ -121,7 +122,7 @@ Download the latest release files and copy them into your vault at `.obsidian/pl
 
 - `main.js`
 - `manifest.json`
-- `versions.json`
+- `styles.css`
 
 Then reload community plugins in Obsidian and enable `Merge And Open Target`.
 
