@@ -248,7 +248,6 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
       const choice = decision?.choice || decision?.selected || decision?.value;
       const confidence = typeof decision?.confidence === "number" ? decision.confidence : decision?.probability ?? 1;
       const minConfidence = this.settings.jevMinConfidence ?? 0.6;
-      console.log("[MergeOpenTarget] Jev decision:", { choice, confidence, minConfidence, target: keyToFileMap[choice]?.path });
       if (choice && keyToFileMap[choice] && confidence >= minConfidence) {
         return {
           file: keyToFileMap[choice],
@@ -498,7 +497,7 @@ var MergeOpenTargetSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    containerEl.createEl("h3", { text: "TypeSafe AI (Jev) \u667A\u80FD\u63A8\u8350" });
+    new import_obsidian.Setting(containerEl).setName("TypeSafe AI (Jev) \u667A\u80FD\u63A8\u8350").setHeading();
     new import_obsidian.Setting(containerEl).setName("\u542F\u7528 Jev \u8BED\u4E49\u63A8\u8350\u76EE\u6807\u7B14\u8BB0").setDesc("\u8C03\u7528 TypeSafe AI \u7684 Jev (System One) \u6A21\u578B\uFF0C\u57FA\u4E8E\u5F53\u524D\u7B14\u8BB0\u5185\u5BB9\u6216\u9009\u533A\u667A\u80FD\u9884\u6D4B\u6700\u9002\u5408\u5408\u5E76\u7684\u76EE\u6807\u7B14\u8BB0\u5E76\u7F6E\u9876\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enableJevRecommend).onChange(async (value) => {
         this.plugin.settings.enableJevRecommend = value;
@@ -655,13 +654,10 @@ function renderFileSuggestion(file, el, plugin, sourceFile, aiRecommendation) {
     if (isAi) {
       const confVal = typeof aiRecommendation.confidence === "number" ? aiRecommendation.confidence : 1;
       const pct = Math.round(confVal <= 1 ? confVal * 100 : confVal);
-      const flair = titleRowEl.createSpan({
-        cls: "suggestion-flair",
+      titleRowEl.createSpan({
+        cls: "suggestion-flair mod-ai",
         text: `AI\u63A8\u8350 ${pct}%`
       });
-      flair.style.backgroundColor = "var(--interactive-accent)";
-      flair.style.color = "var(--text-on-accent)";
-      flair.style.fontWeight = "bold";
     } else if (sourceFile && file.basename && file.basename === sourceFile.basename) {
       titleRowEl.createSpan({
         cls: "suggestion-flair",

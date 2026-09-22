@@ -1,0 +1,5 @@
+.suggestion-flair.mod-ai {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: bold;
+}

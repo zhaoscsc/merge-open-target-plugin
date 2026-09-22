@@ -306,7 +306,6 @@ export default class MergeOpenTargetPlugin extends Plugin {
       const choice = decision?.choice || decision?.selected || decision?.value;
       const confidence = typeof decision?.confidence === "number" ? decision.confidence : (decision?.probability ?? 1);
       const minConfidence = this.settings.jevMinConfidence ?? 0.6;
-      console.log("[MergeOpenTarget] Jev decision:", { choice, confidence, minConfidence, target: keyToFileMap[choice]?.path });
       if (choice && keyToFileMap[choice] && confidence >= minConfidence) {
         return {
           file: keyToFileMap[choice],
@@ -609,7 +608,7 @@ class MergeOpenTargetSettingTab extends PluginSettingTab {
         }),
       );
 
-    containerEl.createEl("h3", { text: "TypeSafe AI (Jev) 智能推荐" });
+    new Setting(containerEl).setName("TypeSafe AI (Jev) 智能推荐").setHeading();
     new Setting(containerEl)
       .setName("启用 Jev 语义推荐目标笔记")
       .setDesc("调用 TypeSafe AI 的 Jev (System One) 模型，基于当前笔记内容或选区智能预测最适合合并的目标笔记并置顶。")
@@ -854,13 +853,10 @@ function renderFileSuggestion(
     if (isAi) {
       const confVal = typeof aiRecommendation.confidence === "number" ? aiRecommendation.confidence : 1;
       const pct = Math.round(confVal <= 1 ? confVal * 100 : confVal);
-      const flair = titleRowEl.createSpan({
-        cls: "suggestion-flair",
+      titleRowEl.createSpan({
+        cls: "suggestion-flair mod-ai",
         text: `AI推荐 ${pct}%`,
       });
-      flair.style.backgroundColor = "var(--interactive-accent)";
-      flair.style.color = "var(--text-on-accent)";
-      flair.style.fontWeight = "bold";
     } else if (sourceFile && file.basename && file.basename === sourceFile.basename) {
       titleRowEl.createSpan({
         cls: "suggestion-flair",
