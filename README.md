@@ -43,6 +43,14 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
+## What's New in v0.2.2
+
+- **Pass Obsidian Developer Portal Review**:
+  - Bump `minAppVersion` to `1.6.6` ensuring full API compatibility with `FileManager.trashFile`.
+  - Fix all TypeScript type safety issues, eliminating unsafe assignments, member accesses, and unhandled floating promises.
+  - Implement native Obsidian `ConfirmModal` replacing native `window.confirm` for desktop and mobile UX consistency.
+  - Fix regex character-class escapes and strict `FuzzyMatch<TFile>` suggestion types.
+
 ## What's New in v0.2.1
 
 - **Fix Obsidian Review Automated Checks**: Bump `minAppVersion` to `1.5.8` matching `SuggestModal` API specs, migrate settings heading to `Setting.setHeading()`, and move inline badge styling to modular `styles.css`.

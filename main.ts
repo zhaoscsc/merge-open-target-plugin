@@ -4,6 +4,7 @@ import {
   FuzzyMatch,
   FuzzySuggestModal,
   MarkdownView,
+  Modal,
   Notice,
   parseLinktext,
   Plugin,
@@ -14,6 +15,21 @@ import {
   prepareFuzzySearch,
   requestUrl,
 } from "obsidian";
+
+interface JevDecision {
+  choice?: string;
+  selected?: string;
+  value?: string;
+  confidence?: number;
+  probability?: number;
+}
+
+interface JevResponse {
+  answers?: Record<string, JevDecision>;
+  results?: Record<string, JevDecision>;
+  questions?: Record<string, JevDecision>;
+  recommended_target_note?: JevDecision;
+}
 
 interface MergeOpenTargetSettings {
   mergePosition: "append" | "prepend";
@@ -137,7 +153,7 @@ export default class MergeOpenTargetPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<MergeOpenTargetSettings>);
   }
 
   async saveSettings(): Promise<void> {
@@ -301,22 +317,67 @@ export default class MergeOpenTargetPlugin extends Plugin {
         console.warn("TypeSafe Jev API returned error status:", response.status, response.text);
         return null;
       }
-      const data = response.json;
-      const decision = data?.answers?.recommended_target_note || data?.results?.recommended_target_note || data?.questions?.recommended_target_note || data?.recommended_target_note;
+      const data = (response.json || {}) as JevResponse;
+      const decision: JevDecision | undefined =
+        data.answers?.["recommended_target_note"] ||
+        data.results?.["recommended_target_note"] ||
+        data.questions?.["recommended_target_note"] ||
+        data.recommended_target_note;
+
       const choice = decision?.choice || decision?.selected || decision?.value;
       const confidence = typeof decision?.confidence === "number" ? decision.confidence : (decision?.probability ?? 1);
       const minConfidence = this.settings.jevMinConfidence ?? 0.6;
-      if (choice && keyToFileMap[choice] && confidence >= minConfidence) {
-        return {
-          file: keyToFileMap[choice],
-          confidence
-        };
+      if (choice && choice in keyToFileMap && confidence >= minConfidence) {
+        const matchedFile = keyToFileMap[choice];
+        if (matchedFile) {
+          return {
+            file: matchedFile,
+            confidence,
+          };
+        }
       }
       return null;
     } catch (err) {
       console.warn("TypeSafe Jev recommendation request failed silently:", err);
       return null;
     }
+  }
+}
+
+class ConfirmModal extends Modal {
+  constructor(
+    app: App,
+    private readonly message: string,
+    private readonly onConfirm: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    void super.onOpen();
+    const { contentEl } = this;
+    contentEl.createEl("p", { text: this.message });
+
+    const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
+    const confirmButton = buttonContainer.createEl("button", {
+      text: "确认",
+      cls: "mod-cta",
+    });
+    confirmButton.onclick = () => {
+      this.close();
+      this.onConfirm();
+    };
+
+    const cancelButton = buttonContainer.createEl("button", {
+      text: "取消",
+    });
+    cancelButton.onclick = () => {
+      this.close();
+    };
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }
 
@@ -344,7 +405,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   onOpen(): void {
-    super.onOpen();
+    void super.onOpen();
     if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
       void this.fetchJevRecommendation();
     }
@@ -403,21 +464,31 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
     return getFileSearchText(this.plugin, file);
   }
 
-  renderSuggestion(match: any, el: HTMLElement): void {
-    const targetFile = match?.item || match;
+  renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
+    const targetFile = match.item;
     renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
 
-  async onChooseItem(targetFile: TFile): Promise<void> {
+  onChooseItem(targetFile: TFile): void {
+    void this.handleChooseItem(targetFile);
+  }
+
+  private async handleChooseItem(targetFile: TFile): Promise<void> {
     if (this.plugin.settings.confirmBeforeMerge) {
-      const confirmed = window.confirm(
+      new ConfirmModal(
+        this.app,
         `把「${this.sourceFile.basename}」合并到「${targetFile.basename}」后，将自动打开目标笔记。是否继续？`,
-      );
-      if (!confirmed) {
-        return;
-      }
+        () => {
+          void this.executeMerge(targetFile);
+        },
+      ).open();
+      return;
     }
 
+    await this.executeMerge(targetFile);
+  }
+
+  private async executeMerge(targetFile: TFile): Promise<void> {
     try {
       await this.plugin.mergeIntoTarget(this.sourceFile, targetFile);
     } catch (error) {
@@ -454,7 +525,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   }
 
   onOpen(): void {
-    super.onOpen();
+    void super.onOpen();
     if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
       void this.fetchJevRecommendation();
     }
@@ -511,21 +582,31 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
     return getFileSearchText(this.plugin, file);
   }
 
-  renderSuggestion(match: any, el: HTMLElement): void {
-    const targetFile = match?.item || match;
+  renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
+    const targetFile = match.item;
     renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
 
-  async onChooseItem(targetFile: TFile): Promise<void> {
+  onChooseItem(targetFile: TFile): void {
+    void this.handleChooseItem(targetFile);
+  }
+
+  private async handleChooseItem(targetFile: TFile): Promise<void> {
     if (this.plugin.settings.confirmBeforeMerge) {
-      const confirmed = window.confirm(
+      new ConfirmModal(
+        this.app,
         `把当前选中的内容合并到「${targetFile.basename}」后，将自动打开目标笔记，并从当前笔记移除选中内容。是否继续？`,
-      );
-      if (!confirmed) {
-        return;
-      }
+        () => {
+          void this.executeMerge(targetFile);
+        },
+      ).open();
+      return;
     }
 
+    await this.executeMerge(targetFile);
+  }
+
+  private async executeMerge(targetFile: TFile): Promise<void> {
     try {
       await this.plugin.mergeSelectedTextIntoTarget(
         this.sourceFile,
@@ -1015,7 +1096,7 @@ function getAliases(file: TFile, app?: App, aliasCache?: Map<string, string[]>):
 
 function readAliasesFromMetadata(file: TFile, app?: App): string[] {
   const cache = app?.metadataCache.getFileCache(file);
-  const rawAliases = cache?.frontmatter?.aliases;
+  const rawAliases: unknown = cache?.frontmatter?.aliases;
   if (typeof rawAliases === "string") {
     return [rawAliases];
   }
@@ -1131,7 +1212,7 @@ const COMMON_STOP_WORDS = new Set([
 
 function extractKeyTerms(text: string): string[] {
   if (!text) return [];
-  const clean = text.toLowerCase().replace(/[#*`_\[\]()~>|\-\n\r\t]/g, " ");
+  const clean = text.toLowerCase().replace(/[#*`_()[\]~>|\n\r\t-]/g, " ");
   const rawTokens = clean.match(/[\u4e00-\u9fa5]{2,4}|[a-zA-Z0-9]{2,}/g) || [];
   const freqMap = new Map<string, number>();
   for (const token of rawTokens) {

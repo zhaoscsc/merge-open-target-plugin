@@ -1,11 +1,12 @@
 {
   "name": "merge-open-target",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Obsidian plugin to merge the current note into another note and open the target note.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "lint": "eslint ."
   },
   "keywords": [
     "obsidian",
@@ -15,6 +16,8 @@
   "license": "MIT",
   "devDependencies": {
     "esbuild": "^0.25.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "obsidian": "^1.12.3",
     "typescript": "^5.8.2"
   }

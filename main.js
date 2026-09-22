@@ -243,22 +243,55 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
         console.warn("TypeSafe Jev API returned error status:", response.status, response.text);
         return null;
       }
-      const data = response.json;
-      const decision = data?.answers?.recommended_target_note || data?.results?.recommended_target_note || data?.questions?.recommended_target_note || data?.recommended_target_note;
+      const data = response.json || {};
+      const decision = data.answers?.["recommended_target_note"] || data.results?.["recommended_target_note"] || data.questions?.["recommended_target_note"] || data.recommended_target_note;
       const choice = decision?.choice || decision?.selected || decision?.value;
       const confidence = typeof decision?.confidence === "number" ? decision.confidence : decision?.probability ?? 1;
       const minConfidence = this.settings.jevMinConfidence ?? 0.6;
-      if (choice && keyToFileMap[choice] && confidence >= minConfidence) {
-        return {
-          file: keyToFileMap[choice],
-          confidence
-        };
+      if (choice && choice in keyToFileMap && confidence >= minConfidence) {
+        const matchedFile = keyToFileMap[choice];
+        if (matchedFile) {
+          return {
+            file: matchedFile,
+            confidence
+          };
+        }
       }
       return null;
     } catch (err) {
       console.warn("TypeSafe Jev recommendation request failed silently:", err);
       return null;
     }
+  }
+};
+var ConfirmModal = class extends import_obsidian.Modal {
+  constructor(app, message, onConfirm) {
+    super(app);
+    this.message = message;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    void super.onOpen();
+    const { contentEl } = this;
+    contentEl.createEl("p", { text: this.message });
+    const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
+    const confirmButton = buttonContainer.createEl("button", {
+      text: "\u786E\u8BA4",
+      cls: "mod-cta"
+    });
+    confirmButton.onclick = () => {
+      this.close();
+      this.onConfirm();
+    };
+    const cancelButton = buttonContainer.createEl("button", {
+      text: "\u53D6\u6D88"
+    });
+    cancelButton.onclick = () => {
+      this.close();
+    };
+  }
+  onClose() {
+    this.contentEl.empty();
   }
 };
 var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
@@ -281,7 +314,7 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
   cachedItems;
   aiRecommendation = null;
   onOpen() {
-    super.onOpen();
+    void super.onOpen();
     if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
       void this.fetchJevRecommendation();
     }
@@ -336,18 +369,26 @@ ${cleanContent.slice(0, 600)}`;
     return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    const targetFile = match?.item || match;
+    const targetFile = match.item;
     renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
-  async onChooseItem(targetFile) {
+  onChooseItem(targetFile) {
+    void this.handleChooseItem(targetFile);
+  }
+  async handleChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
-      const confirmed = window.confirm(
-        `\u628A\u300C${this.sourceFile.basename}\u300D\u5408\u5E76\u5230\u300C${targetFile.basename}\u300D\u540E\uFF0C\u5C06\u81EA\u52A8\u6253\u5F00\u76EE\u6807\u7B14\u8BB0\u3002\u662F\u5426\u7EE7\u7EED\uFF1F`
-      );
-      if (!confirmed) {
-        return;
-      }
+      new ConfirmModal(
+        this.app,
+        `\u628A\u300C${this.sourceFile.basename}\u300D\u5408\u5E76\u5230\u300C${targetFile.basename}\u300D\u540E\uFF0C\u5C06\u81EA\u52A8\u6253\u5F00\u76EE\u6807\u7B14\u8BB0\u3002\u662F\u5426\u7EE7\u7EED\uFF1F`,
+        () => {
+          void this.executeMerge(targetFile);
+        }
+      ).open();
+      return;
     }
+    await this.executeMerge(targetFile);
+  }
+  async executeMerge(targetFile) {
     try {
       await this.plugin.mergeIntoTarget(this.sourceFile, targetFile);
     } catch (error) {
@@ -379,7 +420,7 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
   cachedItems;
   aiRecommendation = null;
   onOpen() {
-    super.onOpen();
+    void super.onOpen();
     if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
       void this.fetchJevRecommendation();
     }
@@ -432,18 +473,26 @@ ${this.selectedText.trim().slice(0, 600)}`;
     return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    const targetFile = match?.item || match;
+    const targetFile = match.item;
     renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
-  async onChooseItem(targetFile) {
+  onChooseItem(targetFile) {
+    void this.handleChooseItem(targetFile);
+  }
+  async handleChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
-      const confirmed = window.confirm(
-        `\u628A\u5F53\u524D\u9009\u4E2D\u7684\u5185\u5BB9\u5408\u5E76\u5230\u300C${targetFile.basename}\u300D\u540E\uFF0C\u5C06\u81EA\u52A8\u6253\u5F00\u76EE\u6807\u7B14\u8BB0\uFF0C\u5E76\u4ECE\u5F53\u524D\u7B14\u8BB0\u79FB\u9664\u9009\u4E2D\u5185\u5BB9\u3002\u662F\u5426\u7EE7\u7EED\uFF1F`
-      );
-      if (!confirmed) {
-        return;
-      }
+      new ConfirmModal(
+        this.app,
+        `\u628A\u5F53\u524D\u9009\u4E2D\u7684\u5185\u5BB9\u5408\u5E76\u5230\u300C${targetFile.basename}\u300D\u540E\uFF0C\u5C06\u81EA\u52A8\u6253\u5F00\u76EE\u6807\u7B14\u8BB0\uFF0C\u5E76\u4ECE\u5F53\u524D\u7B14\u8BB0\u79FB\u9664\u9009\u4E2D\u5185\u5BB9\u3002\u662F\u5426\u7EE7\u7EED\uFF1F`,
+        () => {
+          void this.executeMerge(targetFile);
+        }
+      ).open();
+      return;
     }
+    await this.executeMerge(targetFile);
+  }
+  async executeMerge(targetFile) {
     try {
       await this.plugin.mergeSelectedTextIntoTarget(
         this.sourceFile,
@@ -927,7 +976,7 @@ var COMMON_STOP_WORDS = /* @__PURE__ */ new Set([
 ]);
 function extractKeyTerms(text) {
   if (!text) return [];
-  const clean = text.toLowerCase().replace(/[#*`_\[\]()~>|\-\n\r\t]/g, " ");
+  const clean = text.toLowerCase().replace(/[#*`_()[\]~>|\n\r\t-]/g, " ");
   const rawTokens = clean.match(/[\u4e00-\u9fa5]{2,4}|[a-zA-Z0-9]{2,}/g) || [];
   const freqMap = /* @__PURE__ */ new Map();
   for (const token of rawTokens) {
