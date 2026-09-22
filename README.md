@@ -43,6 +43,10 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
+## What's New in v0.2.3
+
+- **Support Declarative Settings API**: Implement `getSettingDefinitions()` for Obsidian 1.13.0+ settings search indexing while retaining backward-compatible `display()` UI.
+
 ## What's New in v0.2.2
 
 - **Pass Obsidian Developer Portal Review**:

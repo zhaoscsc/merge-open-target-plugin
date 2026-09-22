@@ -511,6 +511,50 @@ var MergeOpenTargetSettingTab = class extends import_obsidian.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
+  getSettingDefinitions() {
+    return [
+      {
+        id: "mergePosition",
+        name: "\u5408\u5E76\u4F4D\u7F6E",
+        description: "\u628A\u5F53\u524D\u7B14\u8BB0\u5185\u5BB9\u8FFD\u52A0\u5230\u76EE\u6807\u7B14\u8BB0\u672B\u5C3E\uFF0C\u6216\u63D2\u5165\u5230\u76EE\u6807\u7B14\u8BB0\u5F00\u5934\u3002"
+      },
+      {
+        id: "separator",
+        name: "\u5206\u9694\u7B26",
+        description: "\u5408\u5E76\u4E24\u7BC7\u7B14\u8BB0\u5185\u5BB9\u65F6\u63D2\u5165\u7684\u6587\u672C\uFF0C\u9ED8\u8BA4\u662F\u4E24\u4E2A\u6362\u884C\u3002"
+      },
+      {
+        id: "trashSourceAfterMerge",
+        name: "\u5408\u5E76\u540E\u79FB\u5165\u5E9F\u7EB8\u7BD3",
+        description: "\u5F00\u542F\u540E\uFF0C\u6E90\u7B14\u8BB0\u5728\u5408\u5E76\u5B8C\u6210\u540E\u4F1A\u6309 Obsidian \u7684\u5E9F\u7EB8\u7BD3\u8BBE\u7F6E\u79FB\u9664\u3002"
+      },
+      {
+        id: "updateLinksAfterMerge",
+        name: "\u6574\u7BC7\u5408\u5E76\u540E\u540C\u6B65\u66F4\u65B0\u6307\u5411\u6E90\u7B14\u8BB0\u7684\u94FE\u63A5",
+        description: "\u4EC5\u5BF9\u201C\u6574\u7BC7\u5408\u5E76\u201D\u751F\u6548\u3002\u5F00\u542F\u540E\uFF0C\u4F1A\u628A\u6240\u6709\u5DF2\u89E3\u6790\u5230\u6E90\u7B14\u8BB0\u7684\u53CC\u94FE\u4E0E embed \u94FE\u63A5\u6539\u5199\u4E3A\u6307\u5411\u76EE\u6807\u7B14\u8BB0\u3002"
+      },
+      {
+        id: "confirmBeforeMerge",
+        name: "\u5408\u5E76\u524D\u786E\u8BA4",
+        description: "\u5F00\u542F\u540E\uFF0C\u6267\u884C\u5408\u5E76\u524D\u4F1A\u518D\u5F39\u4E00\u6B21\u786E\u8BA4\u3002"
+      },
+      {
+        id: "enableJevRecommend",
+        name: "\u542F\u7528 Jev \u8BED\u4E49\u63A8\u8350\u76EE\u6807\u7B14\u8BB0",
+        description: "\u8C03\u7528 TypeSafe AI \u7684 Jev (System One) \u6A21\u578B\uFF0C\u57FA\u4E8E\u5F53\u524D\u7B14\u8BB0\u5185\u5BB9\u6216\u9009\u533A\u667A\u80FD\u9884\u6D4B\u6700\u9002\u5408\u5408\u5E76\u7684\u76EE\u6807\u7B14\u8BB0\u5E76\u7F6E\u9876\u3002"
+      },
+      {
+        id: "typesafeApiKey",
+        name: "TypeSafe API Key",
+        description: "\u5728 https://console.typesafe.ai/ \u83B7\u53D6\u7684 API Key\u3002"
+      },
+      {
+        id: "jevMinConfidence",
+        name: "\u6700\u4F4E\u7F6E\u4FE1\u5EA6\u9608\u503C",
+        description: "\u53EA\u6709\u5F53 Jev \u51B3\u7B56\u7F6E\u4FE1\u5EA6\u9AD8\u4E8E\u8BE5\u9608\u503C\u65F6\u624D\u8FDB\u884C\u7F6E\u9876\u63A8\u8350\u3002"
+      }
+    ];
+  }
   display() {
     const { containerEl } = this;
     containerEl.empty();
