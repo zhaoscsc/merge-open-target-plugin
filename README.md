@@ -43,7 +43,28 @@ This plugin exists to make that workflow feel faster and more direct.
 - Removes the selected text from the source note
 - Opens the target note after merge
 
-## What's New in v0.1.5
+## What's New in v0.2.0
+
+- **AI Target Recommendation**: Optional semantic recommendation powered by TypeSafe AI (Jev / System One), predicting the best target note asynchronously in the background.
+- **Confidence Score Display**: Displays real-time confidence percentage badge (`AI推荐 xx%`) for recommended target notes.
+- **BM25 Vault Pre-filtering**: High-speed BM25 token analysis across tens of thousands of notes to ensure high-relevance candidates.
+- **Defensive Suggestion Rendering**: Slices empty-query candidate list to top 100 notes with robust exception boundaries, ensuring silky-smooth performance in large vaults (30,000+ notes).
+
+## Privacy Notice
+
+- **Completely Opt-in**: The TypeSafe AI recommendation feature is **disabled by default**. The plugin runs entirely offline unless you explicitly enable this feature in settings.
+- **External Data Transmission**: When (and only when) AI recommendation is enabled and a valid TypeSafe API key is provided, the plugin sends an HTTP POST request to `https://api.typesafe.ai/v1/systemone`. The payload contains only the note title and a 600-character snippet of the note content (or selected text) along with up to 30 candidate note titles/paths to ask the model for the best matching destination note.
+- **No Data Retention**: No other vault data is ever sent, collected, or retained.
+
+## What's New in v0.1.9
+
+- Pre-fetch and cache candidate file lists when the modal opens to avoid UI latency in large vaults.
+
+## What's New in v0.1.8
+
+- Support case-insensitive title similarity matching and enhanced prefix prioritizing.
+
+## Previous Update in v0.1.5
 
 - Show default target suggestions by recently modified notes when the picker first opens
 - Keep typed search results sorted by search relevance instead of recency

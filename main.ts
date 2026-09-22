@@ -12,6 +12,7 @@ import {
   Setting,
   TFile,
   prepareFuzzySearch,
+  requestUrl,
 } from "obsidian";
 
 interface MergeOpenTargetSettings {
@@ -21,6 +22,9 @@ interface MergeOpenTargetSettings {
   trashSourceAfterMerge: boolean;
   confirmBeforeMerge: boolean;
   recentFilePaths: string[];
+  enableJevRecommend: boolean;
+  typesafeApiKey: string;
+  jevMinConfidence: number;
 }
 
 const DEFAULT_SETTINGS: MergeOpenTargetSettings = {
@@ -30,6 +34,9 @@ const DEFAULT_SETTINGS: MergeOpenTargetSettings = {
   trashSourceAfterMerge: true,
   confirmBeforeMerge: true,
   recentFilePaths: [],
+  enableJevRecommend: false,
+  typesafeApiKey: "",
+  jevMinConfidence: 0.6,
 };
 
 export default class MergeOpenTargetPlugin extends Plugin {
@@ -247,10 +254,76 @@ export default class MergeOpenTargetPlugin extends Plugin {
 
     return joinContent(targetContent, sourceContent, separator);
   }
+
+  async queryJevRecommend(
+    sourceSnippet: string,
+    candidateFiles: TFile[]
+  ): Promise<{ file: TFile; confidence: number } | null> {
+    if (!this.settings.enableJevRecommend || !this.settings.typesafeApiKey?.trim()) {
+      return null;
+    }
+    if (!candidateFiles || candidateFiles.length === 0) {
+      return null;
+    }
+    try {
+      const topCandidates = candidateFiles.slice(0, 30);
+      const criteria: Record<string, string> = {};
+      const keyToFileMap: Record<string, TFile> = {};
+      topCandidates.forEach((file, index) => {
+        const optionKey = `opt_${index}`;
+        keyToFileMap[optionKey] = file;
+        const aliases = getAliases(file, this.app, this.aliasCache);
+        const aliasDesc = aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : "";
+        criteria[optionKey] = `Note title: "${file.basename}"${aliasDesc}, path: "${file.path}"`;
+      });
+      const payload = {
+        model: "jev-latest",
+        state: sourceSnippet,
+        questions: {
+          recommended_target_note: {
+            type: "choice",
+            instructions: "Which target note is the most relevant and best destination to merge this source content into?",
+            criteria
+          }
+        }
+      };
+      const response = await requestUrl({
+        url: "https://api.typesafe.ai/v1/systemone",
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.settings.typesafeApiKey.trim()}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload),
+        throw: false
+      });
+      if (response.status < 200 || response.status >= 300) {
+        console.warn("TypeSafe Jev API returned error status:", response.status, response.text);
+        return null;
+      }
+      const data = response.json;
+      const decision = data?.answers?.recommended_target_note || data?.results?.recommended_target_note || data?.questions?.recommended_target_note || data?.recommended_target_note;
+      const choice = decision?.choice || decision?.selected || decision?.value;
+      const confidence = typeof decision?.confidence === "number" ? decision.confidence : (decision?.probability ?? 1);
+      const minConfidence = this.settings.jevMinConfidence ?? 0.6;
+      console.log("[MergeOpenTarget] Jev decision:", { choice, confidence, minConfidence, target: keyToFileMap[choice]?.path });
+      if (choice && keyToFileMap[choice] && confidence >= minConfidence) {
+        return {
+          file: keyToFileMap[choice],
+          confidence
+        };
+      }
+      return null;
+    } catch (err) {
+      console.warn("TypeSafe Jev recommendation request failed silently:", err);
+      return null;
+    }
+  }
 }
 
 class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
-  private readonly cachedItems: TFile[];
+  private cachedItems: TFile[];
+  private aiRecommendation: { file: TFile; confidence: number } | null = null;
 
   constructor(
     app: App,
@@ -271,6 +344,47 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
     ]);
   }
 
+  onOpen(): void {
+    super.onOpen();
+    if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
+      void this.fetchJevRecommendation();
+    }
+  }
+
+  async fetchJevRecommendation(): Promise<void> {
+    try {
+      const content = await this.app.vault.cachedRead(this.sourceFile);
+      const cleanContent = stripFrontmatter(content).trim();
+      const snippet = `Title: ${this.sourceFile.basename}\n\nContent snippet:\n${cleanContent.slice(0, 600)}`;
+      
+      const queryTerms = extractKeyTerms(`${this.sourceFile.basename} ${cleanContent.slice(0, 400)}`);
+      const allVaultFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path !== this.sourceFile.path);
+      const bm25Candidates = getBM25TopCandidates(allVaultFiles, queryTerms, this.plugin, this.sourceFile, 20);
+      
+      const seen = new Set<string>();
+      const combinedCandidates: TFile[] = [];
+      for (const f of [...bm25Candidates, ...this.cachedItems]) {
+        if (!seen.has(f.path)) {
+          seen.add(f.path);
+          combinedCandidates.push(f);
+        }
+        if (combinedCandidates.length >= 30) break;
+      }
+
+      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (result?.file) {
+        this.aiRecommendation = result;
+        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
+        this.cachedItems = [result.file, ...remaining];
+        if (this.inputEl) {
+          this.inputEl.dispatchEvent(new Event("input"));
+        }
+      }
+    } catch (err) {
+      console.warn("fetchJevRecommendation error:", err);
+    }
+  }
+
   getItems(): TFile[] {
     return this.cachedItems;
   }
@@ -282,6 +396,7 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
       this.plugin.app,
       this.plugin.aliasCache,
       this.plugin.settings.recentFilePaths,
+      this.aiRecommendation?.file,
     );
   }
 
@@ -289,8 +404,9 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
     return getFileSearchText(this.plugin, file);
   }
 
-  renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
+  renderSuggestion(match: any, el: HTMLElement): void {
+    const targetFile = match?.item || match;
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -314,7 +430,8 @@ class FileMergeTargetModal extends FuzzySuggestModal<TFile> {
 
 class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
   private readonly selectedText: string;
-  private readonly cachedItems: TFile[];
+  private cachedItems: TFile[];
+  private aiRecommendation: { file: TFile; confidence: number } | null = null;
 
   constructor(
     app: App,
@@ -337,6 +454,45 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
     ]);
   }
 
+  onOpen(): void {
+    super.onOpen();
+    if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
+      void this.fetchJevRecommendation();
+    }
+  }
+
+  async fetchJevRecommendation(): Promise<void> {
+    try {
+      const snippet = `Source Note: ${this.sourceFile.basename}\n\nSelected content to merge:\n${this.selectedText.trim().slice(0, 600)}`;
+      
+      const queryTerms = extractKeyTerms(`${this.sourceFile.basename} ${this.selectedText.trim().slice(0, 400)}`);
+      const allVaultFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path !== this.sourceFile.path);
+      const bm25Candidates = getBM25TopCandidates(allVaultFiles, queryTerms, this.plugin, this.sourceFile, 20);
+      
+      const seen = new Set<string>();
+      const combinedCandidates: TFile[] = [];
+      for (const f of [...bm25Candidates, ...this.cachedItems]) {
+        if (!seen.has(f.path)) {
+          seen.add(f.path);
+          combinedCandidates.push(f);
+        }
+        if (combinedCandidates.length >= 30) break;
+      }
+
+      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (result?.file) {
+        this.aiRecommendation = result;
+        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
+        this.cachedItems = [result.file, ...remaining];
+        if (this.inputEl) {
+          this.inputEl.dispatchEvent(new Event("input"));
+        }
+      }
+    } catch (err) {
+      console.warn("fetchJevRecommendation error:", err);
+    }
+  }
+
   getItems(): TFile[] {
     return this.cachedItems;
   }
@@ -348,6 +504,7 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
       this.plugin.app,
       this.plugin.aliasCache,
       this.plugin.settings.recentFilePaths,
+      this.aiRecommendation?.file,
     );
   }
 
@@ -355,8 +512,9 @@ class SelectionMergeTargetModal extends FuzzySuggestModal<TFile> {
     return getFileSearchText(this.plugin, file);
   }
 
-  renderSuggestion(match: { item: TFile }, el: HTMLElement): void {
-    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
+  renderSuggestion(match: any, el: HTMLElement): void {
+    const targetFile = match?.item || match;
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
 
   async onChooseItem(targetFile: TFile): Promise<void> {
@@ -450,6 +608,48 @@ class MergeOpenTargetSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+
+    containerEl.createEl("h3", { text: "TypeSafe AI (Jev) 智能推荐" });
+    new Setting(containerEl)
+      .setName("启用 Jev 语义推荐目标笔记")
+      .setDesc("调用 TypeSafe AI 的 Jev (System One) 模型，基于当前笔记内容或选区智能预测最适合合并的目标笔记并置顶。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.enableJevRecommend).onChange(async (value) => {
+          this.plugin.settings.enableJevRecommend = value;
+          await this.plugin.saveSettings();
+          this.display();
+        })
+      );
+
+    if (this.plugin.settings.enableJevRecommend) {
+      new Setting(containerEl)
+        .setName("TypeSafe API Key")
+        .setDesc("在 https://console.typesafe.ai/ 获取的 API Key。")
+        .addText((text) => {
+          text.inputEl.type = "password";
+          text
+            .setPlaceholder("ts-...")
+            .setValue(this.plugin.settings.typesafeApiKey)
+            .onChange(async (value) => {
+              this.plugin.settings.typesafeApiKey = value.trim();
+              await this.plugin.saveSettings();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName("最低置信度阈值")
+        .setDesc("仅当 Jev 决策置信度高于此阈值时才进行置顶（0.1 ~ 1.0，默认 0.6）。")
+        .addSlider((slider) =>
+          slider
+            .setLimits(0.1, 1.0, 0.05)
+            .setValue(this.plugin.settings.jevMinConfidence ?? 0.6)
+            .setDynamicTooltip()
+            .onChange(async (value) => {
+              this.plugin.settings.jevMinConfidence = value;
+              await this.plugin.saveSettings();
+            })
+        );
+    }
   }
 }
 
@@ -631,52 +831,78 @@ function renderFileSuggestion(
   el: HTMLElement,
   plugin: MergeOpenTargetPlugin,
   sourceFile?: TFile,
+  aiRecommendation?: { file?: TFile; path?: string; confidence?: number } | null,
 ): void {
-  el.empty();
-  el.addClass("mod-complex");
+  try {
+    if (!file || !el) return;
+    el.empty();
+    el.addClass("mod-complex");
 
-  const contentEl = el.createDiv({ cls: "suggestion-content" });
-  const titleRowEl = contentEl.createDiv({ cls: "suggestion-title" });
-  titleRowEl.createSpan({
-    cls: "suggestion-title",
-    text: file.basename,
-  });
+    const contentEl = el.createDiv({ cls: "suggestion-content" });
+    const titleRowEl = contentEl.createDiv({ cls: "suggestion-title" });
+    titleRowEl.createSpan({
+      cls: "suggestion-title",
+      text: file.basename || file.name || "Untitled",
+    });
 
-  if (sourceFile && file.basename === sourceFile.basename) {
-    titleRowEl.createSpan({
-      cls: "suggestion-flair",
-      text: "同名",
-    });
-  } else if (
-    sourceFile &&
-    sourceFile.basename.length >= 2 &&
-    file.basename.length >= 2 &&
-    (file.basename.toLowerCase().includes(sourceFile.basename.toLowerCase()) ||
-      sourceFile.basename.toLowerCase().includes(file.basename.toLowerCase()))
-  ) {
-    titleRowEl.createSpan({
-      cls: "suggestion-flair",
-      text: "相似",
-    });
-  } else if (plugin.settings.recentFilePaths.includes(file.path)) {
-    titleRowEl.createSpan({
-      cls: "suggestion-flair",
-      text: "最近",
-    });
+    const isAi = aiRecommendation && (
+      (aiRecommendation.file && file.path === aiRecommendation.file.path) ||
+      file.path === aiRecommendation.path
+    );
+    const recentList = Array.isArray(plugin?.settings?.recentFilePaths) ? plugin.settings.recentFilePaths : [];
+
+    if (isAi) {
+      const confVal = typeof aiRecommendation.confidence === "number" ? aiRecommendation.confidence : 1;
+      const pct = Math.round(confVal <= 1 ? confVal * 100 : confVal);
+      const flair = titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: `AI推荐 ${pct}%`,
+      });
+      flair.style.backgroundColor = "var(--interactive-accent)";
+      flair.style.color = "var(--text-on-accent)";
+      flair.style.fontWeight = "bold";
+    } else if (sourceFile && file.basename && file.basename === sourceFile.basename) {
+      titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: "同名",
+      });
+    } else if (
+      sourceFile &&
+      sourceFile.basename &&
+      file.basename &&
+      sourceFile.basename.length >= 2 &&
+      file.basename.length >= 2 &&
+      (file.basename.toLowerCase().includes(sourceFile.basename.toLowerCase()) ||
+        sourceFile.basename.toLowerCase().includes(file.basename.toLowerCase()))
+    ) {
+      titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: "相似",
+      });
+    } else if (file.path && recentList.includes(file.path)) {
+      titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: "最近",
+      });
+    }
+
+    const aliases = getAliases(file, plugin?.app, plugin?.aliasCache);
+    if (aliases && aliases.length > 0) {
+      contentEl.createDiv({
+        cls: "suggestion-note",
+        text: `aliases: ${aliases.join(" / ")}`,
+      });
+    }
+
+    if (file.path) {
+      contentEl.createDiv({
+        cls: "suggestion-note",
+        text: file.path,
+      });
+    }
+  } catch (err) {
+    console.error("[MergeOpenTarget] renderFileSuggestion error:", err, file);
   }
-
-  const aliases = getAliases(file, plugin.app, plugin.aliasCache);
-  if (aliases.length > 0) {
-    contentEl.createDiv({
-      cls: "suggestion-note",
-      text: `aliases: ${aliases.join(" / ")}`,
-    });
-  }
-
-  contentEl.createDiv({
-    cls: "suggestion-note",
-    text: file.path,
-  });
 }
 
 function getFileSearchText(plugin: MergeOpenTargetPlugin, file: TFile): string {
@@ -690,12 +916,14 @@ function getFileSuggestions(
   app: App,
   aliasCache: Map<string, string[]>,
   recentFilePaths: string[],
+  aiRecommendedFile?: TFile,
 ): FuzzyMatch<TFile>[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+  const normalizedQuery = (query || "").trim().toLocaleLowerCase();
+  const safeRecent = Array.isArray(recentFilePaths) ? recentFilePaths : [];
+  const recentRank = new Map(safeRecent.map((path, index) => [path, index]));
 
   if (!normalizedQuery) {
-    return files.map((file) => ({
+    return files.slice(0, 100).map((file) => ({
       item: file,
       match: {
         score: 0,
@@ -708,6 +936,7 @@ function getFileSuggestions(
 
   return files
     .map((file) => {
+      if (!file) return null;
       const aliases = getAliases(file, app, aliasCache);
       const searchText = getSearchCorpus(file, aliases);
       const match = search(searchText);
@@ -716,10 +945,11 @@ function getFileSuggestions(
         return null;
       }
 
-      const baseName = file.basename.toLocaleLowerCase();
-      const aliasExact = aliases.some((alias) => alias.toLocaleLowerCase() === normalizedQuery);
+      const isAi = !!(aiRecommendedFile && file.path === aiRecommendedFile.path);
+      const baseName = (file.basename || "").toLocaleLowerCase();
+      const aliasExact = aliases.some((alias) => (alias || "").toLocaleLowerCase() === normalizedQuery);
       const aliasPrefix = aliases.some((alias) =>
-        alias.toLocaleLowerCase().startsWith(normalizedQuery),
+        (alias || "").toLocaleLowerCase().startsWith(normalizedQuery),
       );
       const titleExact = baseName === normalizedQuery;
       const titlePrefix = baseName.startsWith(normalizedQuery);
@@ -728,6 +958,7 @@ function getFileSuggestions(
       return {
         item: file,
         match,
+        isAi,
         aliasExact,
         aliasPrefix,
         titleExact,
@@ -737,6 +968,10 @@ function getFileSuggestions(
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
     .sort((a, b) => {
+      if (a.isAi !== b.isAi) {
+        return a.isAi ? -1 : 1;
+      }
+
       if (a.aliasExact !== b.aliasExact) {
         return a.aliasExact ? -1 : 1;
       }
@@ -761,8 +996,9 @@ function getFileSuggestions(
         return a.recent - b.recent;
       }
 
-      return a.item.path.localeCompare(b.item.path, "zh-Hans-CN");
+      return (a.item.path || "").localeCompare(b.item.path || "", "zh-Hans-CN");
     })
+    .slice(0, 100)
     .map(({ item, match }) => ({ item, match }));
 }
 
@@ -799,10 +1035,18 @@ function sortCandidateFiles(
   files: TFile[],
   recentFilePaths: string[],
   sourceFile?: TFile,
+  aiRecommendedFile?: TFile,
 ): TFile[] {
-  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+  const safeRecent = Array.isArray(recentFilePaths) ? recentFilePaths : [];
+  const recentRank = new Map(safeRecent.map((path, index) => [path, index]));
 
   return [...files].sort((a, b) => {
+    if (aiRecommendedFile) {
+      const aAi = a.path === aiRecommendedFile.path;
+      const bAi = b.path === aiRecommendedFile.path;
+      if (aAi && !bAi) return -1;
+      if (!aAi && bAi) return 1;
+    }
     if (sourceFile) {
       const aSame = a.basename === sourceFile.basename;
       const bSame = b.basename === sourceFile.basename;
@@ -880,4 +1124,79 @@ function getErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+const COMMON_STOP_WORDS = new Set([
+  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from",
+  "up", "about", "into", "over", "after", "is", "are", "was", "were", "be", "been", "being",
+  "have", "has", "had", "do", "does", "did", "this", "that", "these", "those", "it", "its",
+  "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这"
+]);
+
+function extractKeyTerms(text: string): string[] {
+  if (!text) return [];
+  const clean = text.toLowerCase().replace(/[#*`_\[\]()~>|\-\n\r\t]/g, " ");
+  const rawTokens = clean.match(/[\u4e00-\u9fa5]{2,4}|[a-zA-Z0-9]{2,}/g) || [];
+  const freqMap = new Map<string, number>();
+  for (const token of rawTokens) {
+    if (COMMON_STOP_WORDS.has(token)) continue;
+    freqMap.set(token, (freqMap.get(token) || 0) + 1);
+  }
+  return Array.from(freqMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 15)
+    .map(([term]) => term);
+}
+
+function getBM25TopCandidates(
+  allFiles: TFile[],
+  queryTerms: string[],
+  plugin: MergeOpenTargetPlugin,
+  sourceFile: TFile,
+  maxCount = 20
+): TFile[] {
+  if (!queryTerms || queryTerms.length === 0) return [];
+  const N = allFiles.length;
+  if (N === 0) return [];
+  const docFreq = new Map<string, number>();
+  const fileData = allFiles.map((file) => {
+    const aliases = getAliases(file, plugin.app, plugin.aliasCache);
+    const corpus = `${file.basename} ${aliases.join(" ")} ${file.path}`.toLowerCase();
+    for (const term of queryTerms) {
+      if (corpus.includes(term)) {
+        docFreq.set(term, (docFreq.get(term) || 0) + 1);
+      }
+    }
+    return { file, corpus };
+  });
+  const idf = new Map<string, number>();
+  for (const term of queryTerms) {
+    const df = docFreq.get(term) || 0;
+    idf.set(term, Math.log((N - df + 0.5) / (df + 0.5) + 1));
+  }
+  const k1 = 1.2;
+  const b = 0.75;
+  const avgdl = 15;
+  const scored = fileData.map(({ file, corpus }) => {
+    let score = 0;
+    const dl = corpus.length;
+    for (const term of queryTerms) {
+      if (!corpus.includes(term)) continue;
+      const tf = corpus.split(term).length - 1;
+      const termIdf = idf.get(term) || 0;
+      const num = tf * (k1 + 1);
+      const denom = tf + k1 * (1 - b + b * (dl / avgdl));
+      let termScore = termIdf * (num / denom);
+      if (file.basename.toLowerCase().includes(term)) {
+        termScore *= 3.0;
+      }
+      score += termScore;
+    }
+    return { file, score };
+  });
+  return scored
+    .filter((entry) => entry.score > 0 && entry.file.path !== sourceFile.path)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxCount)
+    .map((entry) => entry.file);
 }

@@ -30,7 +30,10 @@ var DEFAULT_SETTINGS = {
   updateLinksAfterMerge: true,
   trashSourceAfterMerge: true,
   confirmBeforeMerge: true,
-  recentFilePaths: []
+  recentFilePaths: [],
+  enableJevRecommend: false,
+  typesafeApiKey: "",
+  jevMinConfidence: 0.6
 };
 var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
   settings;
@@ -197,6 +200,67 @@ var MergeOpenTargetPlugin = class extends import_obsidian.Plugin {
     }
     return joinContent(targetContent, sourceContent, separator);
   }
+  async queryJevRecommend(sourceSnippet, candidateFiles) {
+    if (!this.settings.enableJevRecommend || !this.settings.typesafeApiKey?.trim()) {
+      return null;
+    }
+    if (!candidateFiles || candidateFiles.length === 0) {
+      return null;
+    }
+    try {
+      const topCandidates = candidateFiles.slice(0, 30);
+      const criteria = {};
+      const keyToFileMap = {};
+      topCandidates.forEach((file, index) => {
+        const optionKey = `opt_${index}`;
+        keyToFileMap[optionKey] = file;
+        const aliases = getAliases(file, this.app, this.aliasCache);
+        const aliasDesc = aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : "";
+        criteria[optionKey] = `Note title: "${file.basename}"${aliasDesc}, path: "${file.path}"`;
+      });
+      const payload = {
+        model: "jev-latest",
+        state: sourceSnippet,
+        questions: {
+          recommended_target_note: {
+            type: "choice",
+            instructions: "Which target note is the most relevant and best destination to merge this source content into?",
+            criteria
+          }
+        }
+      };
+      const response = await (0, import_obsidian.requestUrl)({
+        url: "https://api.typesafe.ai/v1/systemone",
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.settings.typesafeApiKey.trim()}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload),
+        throw: false
+      });
+      if (response.status < 200 || response.status >= 300) {
+        console.warn("TypeSafe Jev API returned error status:", response.status, response.text);
+        return null;
+      }
+      const data = response.json;
+      const decision = data?.answers?.recommended_target_note || data?.results?.recommended_target_note || data?.questions?.recommended_target_note || data?.recommended_target_note;
+      const choice = decision?.choice || decision?.selected || decision?.value;
+      const confidence = typeof decision?.confidence === "number" ? decision.confidence : decision?.probability ?? 1;
+      const minConfidence = this.settings.jevMinConfidence ?? 0.6;
+      console.log("[MergeOpenTarget] Jev decision:", { choice, confidence, minConfidence, target: keyToFileMap[choice]?.path });
+      if (choice && keyToFileMap[choice] && confidence >= minConfidence) {
+        return {
+          file: keyToFileMap[choice],
+          confidence
+        };
+      }
+      return null;
+    } catch (err) {
+      console.warn("TypeSafe Jev recommendation request failed silently:", err);
+      return null;
+    }
+  }
 };
 var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
   constructor(app, sourceFile, plugin) {
@@ -216,6 +280,46 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
     ]);
   }
   cachedItems;
+  aiRecommendation = null;
+  onOpen() {
+    super.onOpen();
+    if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
+      void this.fetchJevRecommendation();
+    }
+  }
+  async fetchJevRecommendation() {
+    try {
+      const content = await this.app.vault.cachedRead(this.sourceFile);
+      const cleanContent = stripFrontmatter(content).trim();
+      const snippet = `Title: ${this.sourceFile.basename}
+
+Content snippet:
+${cleanContent.slice(0, 600)}`;
+      const queryTerms = extractKeyTerms(`${this.sourceFile.basename} ${cleanContent.slice(0, 400)}`);
+      const allVaultFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path !== this.sourceFile.path);
+      const bm25Candidates = getBM25TopCandidates(allVaultFiles, queryTerms, this.plugin, this.sourceFile, 20);
+      const seen = /* @__PURE__ */ new Set();
+      const combinedCandidates = [];
+      for (const f of [...bm25Candidates, ...this.cachedItems]) {
+        if (!seen.has(f.path)) {
+          seen.add(f.path);
+          combinedCandidates.push(f);
+        }
+        if (combinedCandidates.length >= 30) break;
+      }
+      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (result?.file) {
+        this.aiRecommendation = result;
+        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
+        this.cachedItems = [result.file, ...remaining];
+        if (this.inputEl) {
+          this.inputEl.dispatchEvent(new Event("input"));
+        }
+      }
+    } catch (err) {
+      console.warn("fetchJevRecommendation error:", err);
+    }
+  }
   getItems() {
     return this.cachedItems;
   }
@@ -225,14 +329,16 @@ var FileMergeTargetModal = class extends import_obsidian.FuzzySuggestModal {
       query,
       this.plugin.app,
       this.plugin.aliasCache,
-      this.plugin.settings.recentFilePaths
+      this.plugin.settings.recentFilePaths,
+      this.aiRecommendation?.file
     );
   }
   getItemText(file) {
     return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
+    const targetFile = match?.item || match;
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -272,6 +378,44 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
   }
   selectedText;
   cachedItems;
+  aiRecommendation = null;
+  onOpen() {
+    super.onOpen();
+    if (this.plugin.settings.enableJevRecommend && this.plugin.settings.typesafeApiKey?.trim()) {
+      void this.fetchJevRecommendation();
+    }
+  }
+  async fetchJevRecommendation() {
+    try {
+      const snippet = `Source Note: ${this.sourceFile.basename}
+
+Selected content to merge:
+${this.selectedText.trim().slice(0, 600)}`;
+      const queryTerms = extractKeyTerms(`${this.sourceFile.basename} ${this.selectedText.trim().slice(0, 400)}`);
+      const allVaultFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path !== this.sourceFile.path);
+      const bm25Candidates = getBM25TopCandidates(allVaultFiles, queryTerms, this.plugin, this.sourceFile, 20);
+      const seen = /* @__PURE__ */ new Set();
+      const combinedCandidates = [];
+      for (const f of [...bm25Candidates, ...this.cachedItems]) {
+        if (!seen.has(f.path)) {
+          seen.add(f.path);
+          combinedCandidates.push(f);
+        }
+        if (combinedCandidates.length >= 30) break;
+      }
+      const result = await this.plugin.queryJevRecommend(snippet, combinedCandidates);
+      if (result?.file) {
+        this.aiRecommendation = result;
+        const remaining = this.cachedItems.filter((f) => f.path !== result.file.path);
+        this.cachedItems = [result.file, ...remaining];
+        if (this.inputEl) {
+          this.inputEl.dispatchEvent(new Event("input"));
+        }
+      }
+    } catch (err) {
+      console.warn("fetchJevRecommendation error:", err);
+    }
+  }
   getItems() {
     return this.cachedItems;
   }
@@ -281,14 +425,16 @@ var SelectionMergeTargetModal = class extends import_obsidian.FuzzySuggestModal 
       query,
       this.plugin.app,
       this.plugin.aliasCache,
-      this.plugin.settings.recentFilePaths
+      this.plugin.settings.recentFilePaths,
+      this.aiRecommendation?.file
     );
   }
   getItemText(file) {
     return getFileSearchText(this.plugin, file);
   }
   renderSuggestion(match, el) {
-    renderFileSuggestion(match.item, el, this.plugin, this.sourceFile);
+    const targetFile = match?.item || match;
+    renderFileSuggestion(targetFile, el, this.plugin, this.sourceFile, this.aiRecommendation);
   }
   async onChooseItem(targetFile) {
     if (this.plugin.settings.confirmBeforeMerge) {
@@ -338,7 +484,9 @@ var MergeOpenTargetSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("\u6574\u7BC7\u5408\u5E76\u540E\u540C\u6B65\u66F4\u65B0\u6307\u5411\u6E90\u7B14\u8BB0\u7684\u94FE\u63A5").setDesc("\u4EC5\u5BF9\u201C\u6574\u7BC7\u5408\u5E76\u201D\u751F\u6548\u3002\u5F00\u542F\u540E\uFF0C\u4F1A\u628A\u6240\u6709\u5DF2\u89E3\u6790\u5230\u6E90\u7B14\u8BB0\u7684\u53CC\u94FE\u4E0E embed \u94FE\u63A5\u6539\u5199\u4E3A\u6307\u5411\u76EE\u6807\u7B14\u8BB0\u3002").addToggle(
+    new import_obsidian.Setting(containerEl).setName("\u6574\u7BC7\u5408\u5E76\u540E\u540C\u6B65\u66F4\u65B0\u6307\u5411\u6E90\u7B14\u8BB0\u7684\u94FE\u63A5").setDesc(
+      "\u4EC5\u5BF9\u201C\u6574\u7BC7\u5408\u5E76\u201D\u751F\u6548\u3002\u5F00\u542F\u540E\uFF0C\u4F1A\u628A\u6240\u6709\u5DF2\u89E3\u6790\u5230\u6E90\u7B14\u8BB0\u7684\u53CC\u94FE\u4E0E embed \u94FE\u63A5\u6539\u5199\u4E3A\u6307\u5411\u76EE\u6807\u7B14\u8BB0\u3002"
+    ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.updateLinksAfterMerge).onChange(async (value) => {
         this.plugin.settings.updateLinksAfterMerge = value;
         await this.plugin.saveSettings();
@@ -350,6 +498,29 @@ var MergeOpenTargetSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h3", { text: "TypeSafe AI (Jev) \u667A\u80FD\u63A8\u8350" });
+    new import_obsidian.Setting(containerEl).setName("\u542F\u7528 Jev \u8BED\u4E49\u63A8\u8350\u76EE\u6807\u7B14\u8BB0").setDesc("\u8C03\u7528 TypeSafe AI \u7684 Jev (System One) \u6A21\u578B\uFF0C\u57FA\u4E8E\u5F53\u524D\u7B14\u8BB0\u5185\u5BB9\u6216\u9009\u533A\u667A\u80FD\u9884\u6D4B\u6700\u9002\u5408\u5408\u5E76\u7684\u76EE\u6807\u7B14\u8BB0\u5E76\u7F6E\u9876\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.enableJevRecommend).onChange(async (value) => {
+        this.plugin.settings.enableJevRecommend = value;
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    if (this.plugin.settings.enableJevRecommend) {
+      new import_obsidian.Setting(containerEl).setName("TypeSafe API Key").setDesc("\u5728 https://console.typesafe.ai/ \u83B7\u53D6\u7684 API Key\u3002").addText((text) => {
+        text.inputEl.type = "password";
+        text.setPlaceholder("ts-...").setValue(this.plugin.settings.typesafeApiKey).onChange(async (value) => {
+          this.plugin.settings.typesafeApiKey = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+      new import_obsidian.Setting(containerEl).setName("\u6700\u4F4E\u7F6E\u4FE1\u5EA6\u9608\u503C").setDesc("\u4EC5\u5F53 Jev \u51B3\u7B56\u7F6E\u4FE1\u5EA6\u9AD8\u4E8E\u6B64\u9608\u503C\u65F6\u624D\u8FDB\u884C\u7F6E\u9876\uFF080.1 ~ 1.0\uFF0C\u9ED8\u8BA4 0.6\uFF09\u3002").addSlider(
+        (slider) => slider.setLimits(0.1, 1, 0.05).setValue(this.plugin.settings.jevMinConfidence ?? 0.6).setDynamicTooltip().onChange(async (value) => {
+          this.plugin.settings.jevMinConfidence = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    }
   }
 };
 function joinContent(first, second, separator) {
@@ -363,9 +534,7 @@ function joinContent(first, second, separator) {
 }
 function getMarkdownReferrersToFile(app, targetPath) {
   const resolvedLinks = app.metadataCache.resolvedLinks ?? {};
-  return Object.entries(resolvedLinks).filter(([, links]) => (links?.[targetPath] ?? 0) > 0).map(([sourcePath]) => app.vault.getAbstractFileByPath(sourcePath)).filter(
-    (file) => file instanceof import_obsidian.TFile && file.extension === "md"
-  );
+  return Object.entries(resolvedLinks).filter(([, links]) => (links?.[targetPath] ?? 0) > 0).map(([sourcePath]) => app.vault.getAbstractFileByPath(sourcePath)).filter((file) => file instanceof import_obsidian.TFile && file.extension === "md");
 }
 async function rewriteLinksInFiles(app, files, sourceFile, targetFile) {
   for (const file of files) {
@@ -434,15 +603,24 @@ function collectLinkReplacements(app, references, isEmbed, referrerPath, sourceF
       return [];
     }
     const currentText = content.slice(startOffset, endOffset);
-    const nextText = buildReplacementReference(app, targetFile, referrerPath, parsed.subpath, reference.displayText, isEmbed);
+    const nextText = buildReplacementReference(
+      app,
+      targetFile,
+      referrerPath,
+      parsed.subpath,
+      reference.displayText,
+      isEmbed
+    );
     if (!currentText || currentText === nextText) {
       return [];
     }
-    return [{
-      start: startOffset,
-      end: endOffset,
-      text: nextText
-    }];
+    return [
+      {
+        start: startOffset,
+        end: endOffset,
+        text: nextText
+      }
+    ];
   });
 }
 function buildReplacementReference(app, targetFile, referrerPath, subpath, displayText, isEmbed) {
@@ -461,52 +639,72 @@ function getFrontmatterEndOffset(content) {
   const match = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/);
   return match ? match[0].length : 0;
 }
-function renderFileSuggestion(file, el, plugin, sourceFile) {
-  el.empty();
-  el.addClass("mod-complex");
-  const contentEl = el.createDiv({ cls: "suggestion-content" });
-  const titleRowEl = contentEl.createDiv({ cls: "suggestion-title" });
-  titleRowEl.createSpan({
-    cls: "suggestion-title",
-    text: file.basename
-  });
-  if (sourceFile && file.basename === sourceFile.basename) {
+function renderFileSuggestion(file, el, plugin, sourceFile, aiRecommendation) {
+  try {
+    if (!file || !el) return;
+    el.empty();
+    el.addClass("mod-complex");
+    const contentEl = el.createDiv({ cls: "suggestion-content" });
+    const titleRowEl = contentEl.createDiv({ cls: "suggestion-title" });
     titleRowEl.createSpan({
-      cls: "suggestion-flair",
-      text: "\u540C\u540D"
+      cls: "suggestion-title",
+      text: file.basename || file.name || "Untitled"
     });
-  } else if (sourceFile && sourceFile.basename.length >= 2 && file.basename.length >= 2 && (file.basename.toLowerCase().includes(sourceFile.basename.toLowerCase()) || sourceFile.basename.toLowerCase().includes(file.basename.toLowerCase()))) {
-    titleRowEl.createSpan({
-      cls: "suggestion-flair",
-      text: "\u76F8\u4F3C"
-    });
-  } else if (plugin.settings.recentFilePaths.includes(file.path)) {
-    titleRowEl.createSpan({
-      cls: "suggestion-flair",
-      text: "\u6700\u8FD1"
-    });
+    const isAi = aiRecommendation && (aiRecommendation.file && file.path === aiRecommendation.file.path || file.path === aiRecommendation.path);
+    const recentList = Array.isArray(plugin?.settings?.recentFilePaths) ? plugin.settings.recentFilePaths : [];
+    if (isAi) {
+      const confVal = typeof aiRecommendation.confidence === "number" ? aiRecommendation.confidence : 1;
+      const pct = Math.round(confVal <= 1 ? confVal * 100 : confVal);
+      const flair = titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: `AI\u63A8\u8350 ${pct}%`
+      });
+      flair.style.backgroundColor = "var(--interactive-accent)";
+      flair.style.color = "var(--text-on-accent)";
+      flair.style.fontWeight = "bold";
+    } else if (sourceFile && file.basename && file.basename === sourceFile.basename) {
+      titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: "\u540C\u540D"
+      });
+    } else if (sourceFile && sourceFile.basename && file.basename && sourceFile.basename.length >= 2 && file.basename.length >= 2 && (file.basename.toLowerCase().includes(sourceFile.basename.toLowerCase()) || sourceFile.basename.toLowerCase().includes(file.basename.toLowerCase()))) {
+      titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: "\u76F8\u4F3C"
+      });
+    } else if (file.path && recentList.includes(file.path)) {
+      titleRowEl.createSpan({
+        cls: "suggestion-flair",
+        text: "\u6700\u8FD1"
+      });
+    }
+    const aliases = getAliases(file, plugin?.app, plugin?.aliasCache);
+    if (aliases && aliases.length > 0) {
+      contentEl.createDiv({
+        cls: "suggestion-note",
+        text: `aliases: ${aliases.join(" / ")}`
+      });
+    }
+    if (file.path) {
+      contentEl.createDiv({
+        cls: "suggestion-note",
+        text: file.path
+      });
+    }
+  } catch (err) {
+    console.error("[MergeOpenTarget] renderFileSuggestion error:", err, file);
   }
-  const aliases = getAliases(file, plugin.app, plugin.aliasCache);
-  if (aliases.length > 0) {
-    contentEl.createDiv({
-      cls: "suggestion-note",
-      text: `aliases: ${aliases.join(" / ")}`
-    });
-  }
-  contentEl.createDiv({
-    cls: "suggestion-note",
-    text: file.path
-  });
 }
 function getFileSearchText(plugin, file) {
   const aliases = getAliases(file, plugin.app, plugin.aliasCache);
   return [...aliases, file.basename, file.path].join(" ");
 }
-function getFileSuggestions(files, query, app, aliasCache, recentFilePaths) {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+function getFileSuggestions(files, query, app, aliasCache, recentFilePaths, aiRecommendedFile) {
+  const normalizedQuery = (query || "").trim().toLocaleLowerCase();
+  const safeRecent = Array.isArray(recentFilePaths) ? recentFilePaths : [];
+  const recentRank = new Map(safeRecent.map((path, index) => [path, index]));
   if (!normalizedQuery) {
-    return files.map((file) => ({
+    return files.slice(0, 100).map((file) => ({
       item: file,
       match: {
         score: 0,
@@ -516,16 +714,18 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths) {
   }
   const search = (0, import_obsidian.prepareFuzzySearch)(normalizedQuery);
   return files.map((file) => {
+    if (!file) return null;
     const aliases = getAliases(file, app, aliasCache);
     const searchText = getSearchCorpus(file, aliases);
     const match = search(searchText);
     if (!match) {
       return null;
     }
-    const baseName = file.basename.toLocaleLowerCase();
-    const aliasExact = aliases.some((alias) => alias.toLocaleLowerCase() === normalizedQuery);
+    const isAi = !!(aiRecommendedFile && file.path === aiRecommendedFile.path);
+    const baseName = (file.basename || "").toLocaleLowerCase();
+    const aliasExact = aliases.some((alias) => (alias || "").toLocaleLowerCase() === normalizedQuery);
     const aliasPrefix = aliases.some(
-      (alias) => alias.toLocaleLowerCase().startsWith(normalizedQuery)
+      (alias) => (alias || "").toLocaleLowerCase().startsWith(normalizedQuery)
     );
     const titleExact = baseName === normalizedQuery;
     const titlePrefix = baseName.startsWith(normalizedQuery);
@@ -533,6 +733,7 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths) {
     return {
       item: file,
       match,
+      isAi,
       aliasExact,
       aliasPrefix,
       titleExact,
@@ -540,6 +741,9 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths) {
       recent
     };
   }).filter((entry) => entry !== null).sort((a, b) => {
+    if (a.isAi !== b.isAi) {
+      return a.isAi ? -1 : 1;
+    }
     if (a.aliasExact !== b.aliasExact) {
       return a.aliasExact ? -1 : 1;
     }
@@ -558,8 +762,8 @@ function getFileSuggestions(files, query, app, aliasCache, recentFilePaths) {
     if (a.item.basename === b.item.basename && a.recent !== b.recent) {
       return a.recent - b.recent;
     }
-    return a.item.path.localeCompare(b.item.path, "zh-Hans-CN");
-  }).map(({ item, match }) => ({ item, match }));
+    return (a.item.path || "").localeCompare(b.item.path || "", "zh-Hans-CN");
+  }).slice(0, 100).map(({ item, match }) => ({ item, match }));
 }
 function getSearchCorpus(file, aliases) {
   return [...aliases, file.basename, file.path].join(" \n ");
@@ -584,30 +788,34 @@ function readAliasesFromMetadata(file, app) {
   }
   return [];
 }
-function sortCandidateFiles(files, recentFilePaths, sourceFile) {
-  const recentRank = new Map(recentFilePaths.map((path, index) => [path, index]));
+function sortCandidateFiles(files, recentFilePaths, sourceFile, aiRecommendedFile) {
+  const safeRecent = Array.isArray(recentFilePaths) ? recentFilePaths : [];
+  const recentRank = new Map(safeRecent.map((path, index) => [path, index]));
   return [...files].sort((a, b) => {
+    if (aiRecommendedFile) {
+      const aAi = a.path === aiRecommendedFile.path;
+      const bAi = b.path === aiRecommendedFile.path;
+      if (aAi && !bAi) return -1;
+      if (!aAi && bAi) return 1;
+    }
     if (sourceFile) {
       const aSame = a.basename === sourceFile.basename;
       const bSame = b.basename === sourceFile.basename;
       if (aSame && !bSame) return -1;
       if (!aSame && bSame) return 1;
-
       const isSimilar = (name1, name2) => {
         if (name1.length < 2 || name2.length < 2) return false;
         const n1 = name1.toLowerCase();
         const n2 = name2.toLowerCase();
         return n1.includes(n2) || n2.includes(n1);
       };
-
       const aSimilar = isSimilar(a.basename, sourceFile.basename);
       const bSimilar = isSimilar(b.basename, sourceFile.basename);
       if (aSimilar && !bSimilar) return -1;
       if (!aSimilar && bSimilar) return 1;
-      
       if (aSimilar && bSimilar) {
-          const diff = Math.abs(a.basename.length - sourceFile.basename.length) - Math.abs(b.basename.length - sourceFile.basename.length);
-          if (diff !== 0) return diff > 0 ? 1 : -1;
+        const diff = Math.abs(a.basename.length - sourceFile.basename.length) - Math.abs(b.basename.length - sourceFile.basename.length);
+        if (diff !== 0) return diff > 0 ? 1 : -1;
       }
     }
     const modifiedTimeDiff = b.stat.mtime - a.stat.mtime;
@@ -651,4 +859,126 @@ function getErrorMessage(error) {
     return error.message;
   }
   return String(error);
+}
+var COMMON_STOP_WORDS = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "of",
+  "with",
+  "by",
+  "from",
+  "up",
+  "about",
+  "into",
+  "over",
+  "after",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "this",
+  "that",
+  "these",
+  "those",
+  "it",
+  "its",
+  "\u7684",
+  "\u4E86",
+  "\u5728",
+  "\u662F",
+  "\u6211",
+  "\u6709",
+  "\u548C",
+  "\u5C31",
+  "\u4E0D",
+  "\u4EBA",
+  "\u90FD",
+  "\u4E00",
+  "\u4E00\u4E2A",
+  "\u4E0A",
+  "\u4E5F",
+  "\u5F88",
+  "\u5230",
+  "\u8BF4",
+  "\u8981",
+  "\u53BB",
+  "\u4F60",
+  "\u4F1A",
+  "\u7740",
+  "\u6CA1\u6709",
+  "\u770B",
+  "\u597D",
+  "\u81EA\u5DF1",
+  "\u8FD9"
+]);
+function extractKeyTerms(text) {
+  if (!text) return [];
+  const clean = text.toLowerCase().replace(/[#*`_\[\]()~>|\-\n\r\t]/g, " ");
+  const rawTokens = clean.match(/[\u4e00-\u9fa5]{2,4}|[a-zA-Z0-9]{2,}/g) || [];
+  const freqMap = /* @__PURE__ */ new Map();
+  for (const token of rawTokens) {
+    if (COMMON_STOP_WORDS.has(token)) continue;
+    freqMap.set(token, (freqMap.get(token) || 0) + 1);
+  }
+  return Array.from(freqMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([term]) => term);
+}
+function getBM25TopCandidates(allFiles, queryTerms, plugin, sourceFile, maxCount = 20) {
+  if (!queryTerms || queryTerms.length === 0) return [];
+  const N = allFiles.length;
+  if (N === 0) return [];
+  const docFreq = /* @__PURE__ */ new Map();
+  const fileData = allFiles.map((file) => {
+    const aliases = getAliases(file, plugin.app, plugin.aliasCache);
+    const corpus = `${file.basename} ${aliases.join(" ")} ${file.path}`.toLowerCase();
+    for (const term of queryTerms) {
+      if (corpus.includes(term)) {
+        docFreq.set(term, (docFreq.get(term) || 0) + 1);
+      }
+    }
+    return { file, corpus };
+  });
+  const idf = /* @__PURE__ */ new Map();
+  for (const term of queryTerms) {
+    const df = docFreq.get(term) || 0;
+    idf.set(term, Math.log((N - df + 0.5) / (df + 0.5) + 1));
+  }
+  const k1 = 1.2;
+  const b = 0.75;
+  const avgdl = 15;
+  const scored = fileData.map(({ file, corpus }) => {
+    let score = 0;
+    const dl = corpus.length;
+    for (const term of queryTerms) {
+      if (!corpus.includes(term)) continue;
+      const tf = corpus.split(term).length - 1;
+      const termIdf = idf.get(term) || 0;
+      const num = tf * (k1 + 1);
+      const denom = tf + k1 * (1 - b + b * (dl / avgdl));
+      let termScore = termIdf * (num / denom);
+      if (file.basename.toLowerCase().includes(term)) {
+        termScore *= 3;
+      }
+      score += termScore;
+    }
+    return { file, score };
+  });
+  return scored.filter((entry) => entry.score > 0 && entry.file.path !== sourceFile.path).sort((a, b2) => b2.score - a.score).slice(0, maxCount).map((entry) => entry.file);
 }
