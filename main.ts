@@ -659,51 +659,6 @@ class MergeOpenTargetSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  getSettingDefinitions(): unknown[] {
-    return [
-      {
-        id: "mergePosition",
-        name: "合并位置",
-        description: "把当前笔记内容追加到目标笔记末尾，或插入到目标笔记开头。",
-      },
-      {
-        id: "separator",
-        name: "分隔符",
-        description: "合并两篇笔记内容时插入的文本，默认是两个换行。",
-      },
-      {
-        id: "trashSourceAfterMerge",
-        name: "合并后移入废纸篓",
-        description: "开启后，源笔记在合并完成后会按 Obsidian 的废纸篓设置移除。",
-      },
-      {
-        id: "updateLinksAfterMerge",
-        name: "整篇合并后同步更新指向源笔记的链接",
-        description: "仅对“整篇合并”生效。开启后，会把所有已解析到源笔记的双链与 embed 链接改写为指向目标笔记。",
-      },
-      {
-        id: "confirmBeforeMerge",
-        name: "合并前确认",
-        description: "开启后，执行合并前会再弹一次确认。",
-      },
-      {
-        id: "enableJevRecommend",
-        name: "启用 Jev 语义推荐目标笔记",
-        description: "调用 TypeSafe AI 的 Jev (System One) 模型，基于当前笔记内容或选区智能预测最适合合并的目标笔记并置顶。",
-      },
-      {
-        id: "typesafeApiKey",
-        name: "TypeSafe API Key",
-        description: "在 https://console.typesafe.ai/ 获取的 API Key。",
-      },
-      {
-        id: "jevMinConfidence",
-        name: "最低置信度阈值",
-        description: "只有当 Jev 决策置信度高于该阈值时才进行置顶推荐。",
-      },
-    ];
-  }
-
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
